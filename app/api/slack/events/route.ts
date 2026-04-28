@@ -15,7 +15,7 @@
 import { NextResponse } from "next/server";
 import { env, validateEnv, MissingEnvError } from "@/lib/env";
 import {
-  detectAgentFromMention,
+  detectAgentFromChannel,
   verifySlackSignature,
 } from "@/lib/slack";
 import { inngest } from "@/lib/inngest";
@@ -136,15 +136,27 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const mention = event as SlackAppMentionEvent;
-  const agent = detectAgentFromMention(mention.text);
-  console.log("[slack/events] routing to agent:", agent);
+  const agent = detectAgentFromChannel(mention.channel);
+  console.log(
+    "[slack/events] routing by channel:",
+    mention.channel,
+    "→ agent:",
+    agent,
+  );
 
   if (!agent) {
+    // The bot was @-mentioned in a channel we don't track (or
+    // SLACK_CHANNEL_* env vars hold names instead of channel ids — names
+    // are not what Slack puts on the event payload).
     console.log(
-      "[slack/events] no agent matched mention text — text was:",
-      mention.text,
+      "[slack/events] no agent matched channel — channel was:",
+      mention.channel,
+      "expected one of:",
+      env.SLACK_CHANNEL_SOCIAL,
+      env.SLACK_CHANNEL_GROWTH,
+      env.SLACK_CHANNEL_COO,
     );
-    return NextResponse.json({ ok: true, ignored: "unrecognized_agent" });
+    return NextResponse.json({ ok: true, ignored: "unrecognized_channel" });
   }
 
   // Fire-and-ack: emit the Inngest event and return immediately. Logging
