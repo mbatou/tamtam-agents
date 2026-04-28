@@ -187,10 +187,11 @@ export function socialTools(ctx: ToolCtx = {}): ToolDefinition[] {
           status: "completed",
         });
 
-        // Reliable, Slack-renderable placeholder. Replace once DALL-E
-        // is back online.
+        // Reliable, Slack-renderable placeholder. If Slack rejects this
+        // domain too, swap to:
+        //   https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=1200&h=630&fit=crop
         return {
-          url: "https://placehold.co/1200x630/1a1a2e/ffffff?text=Tamtam+Post",
+          url: "https://via.placeholder.com/1200x630.png?text=Tamtam+Post",
           path: "placeholder",
           revised_prompt: null,
           stubbed: true,
