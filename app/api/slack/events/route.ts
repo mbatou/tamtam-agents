@@ -39,13 +39,15 @@ interface SlackAppMentionEvent {
   channel: string;
   event_ts: string;
   thread_ts?: string;
+  /** Slack populates this when the source is a bot/integration user. */
+  bot_id?: string;
 }
 
 interface SlackEventCallback {
   type: "event_callback";
   event_id: string;
   event_time: number;
-  event: SlackAppMentionEvent | { type: string };
+  event: SlackAppMentionEvent | { type: string; bot_id?: string };
 }
 
 type SlackPayload = SlackUrlVerification | SlackEventCallback;
@@ -70,6 +72,8 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const rawBody = await req.text();
+  console.log("[slack/events] raw body:", rawBody);
+
   const ok = verifySlackSignature({
     signingSecret: env.SLACK_SIGNING_SECRET,
     rawBody,
@@ -77,6 +81,7 @@ export async function POST(req: Request): Promise<Response> {
     signature: req.headers.get("x-slack-signature"),
   });
   if (!ok) {
+    console.log("[slack/events] signature verification FAILED");
     return new NextResponse("invalid signature", { status: 401 });
   }
 
@@ -84,26 +89,61 @@ export async function POST(req: Request): Promise<Response> {
   try {
     payload = JSON.parse(rawBody) as SlackPayload;
   } catch {
+    console.log("[slack/events] body is not valid JSON");
     return new NextResponse("invalid json", { status: 400 });
   }
 
+  console.log("[slack/events] event type:", payload.type);
+
   // Slack URL verification handshake — must echo `challenge` back.
   if (payload.type === "url_verification") {
+    console.log("[slack/events] url_verification handshake");
     return NextResponse.json({ challenge: payload.challenge });
   }
 
   if (payload.type !== "event_callback") {
+    // Defensive: TS proves this is unreachable given the union, but the
+    // wire format may evolve and we want the gate (and the log) intact.
+    console.log("[slack/events] ignored non_event_callback");
     return NextResponse.json({ ok: true, ignored: "non_event_callback" });
   }
 
   const event = payload.event;
+  console.log("[slack/events] event:", JSON.stringify(event));
+
+  // Bot-loop guard. Drop bot-originated events EXCEPT app_mention so we
+  // never react to our own messages or to other integrations' chatter.
+  // Critical: keep app_mention through this gate, even if Slack stamped
+  // a bot_id on it (e.g., a workflow @-mentioned us) — that is a
+  // legitimate request to act.
+  if (
+    "bot_id" in event &&
+    event.bot_id &&
+    event.type !== "app_mention"
+  ) {
+    console.log(
+      "[slack/events] ignored bot-originated event:",
+      event.type,
+      "bot_id=",
+      event.bot_id,
+    );
+    return NextResponse.json({ ok: true, ignored: "bot_event" });
+  }
+
   if (event.type !== "app_mention") {
+    console.log("[slack/events] ignored event type:", event.type);
     return NextResponse.json({ ok: true, ignored: event.type });
   }
 
   const mention = event as SlackAppMentionEvent;
   const agent = detectAgentFromMention(mention.text);
+  console.log("[slack/events] routing to agent:", agent);
+
   if (!agent) {
+    console.log(
+      "[slack/events] no agent matched mention text — text was:",
+      mention.text,
+    );
     return NextResponse.json({ ok: true, ignored: "unrecognized_agent" });
   }
 
@@ -134,5 +174,6 @@ export async function POST(req: Request): Promise<Response> {
     }).catch(() => undefined), // never let logging failures block ACK
   ]);
 
+  console.log("[slack/events] inngest event emitted:", MENTION_EVENT_NAME[agent]);
   return NextResponse.json({ ok: true, dispatched: agent });
 }
