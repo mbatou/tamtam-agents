@@ -1,0 +1,39 @@
+{
+  "name": "tamtam-agents",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-powered multi-agent system for Tamtam (Lupandu SARL).",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "@react-email/components": "^0.0.31",
+    "@slack/bolt": "^4.1.1",
+    "@slack/web-api": "^7.8.0",
+    "@supabase/supabase-js": "^2.46.1",
+    "inngest": "^3.27.4",
+    "next": "14.2.18",
+    "openai": "^4.73.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-email": "^3.0.2",
+    "resend": "^4.0.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.6",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "14.2.18",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.6.3"
+  }
+}
