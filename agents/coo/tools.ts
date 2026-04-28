@@ -12,7 +12,12 @@ import {
   getRecentAgentLogs,
   logAgentAction,
 } from "@/lib/supabase";
-import { defaultChannelFor, postAsAgent } from "@/lib/slack";
+import {
+  defaultChannelFor,
+  openDmChannelFor,
+  postAsAgent,
+} from "@/lib/slack";
+import { env } from "@/lib/env";
 import { inngest } from "@/lib/inngest";
 import type { AgentName } from "@/types";
 
@@ -164,8 +169,9 @@ export function cooTools(_ctx: ToolCtx = {}): ToolDefinition[] {
     {
       name: "dm_georges",
       description:
-        "Escalate a message to Georges. Currently posts to the COO channel " +
-        "with @-channel because we don't have a stable Georges user ID. " +
+        "Escalate a message to Georges. When SLACK_GEORGES_USER_ID is set, " +
+        "delivers a real DM via conversations.open + chat.postMessage. " +
+        "Otherwise falls back to an @channel post in #tamtam-coo. " +
         "Use sparingly — only when a real human decision is needed.",
       input_schema: {
         type: "object",
@@ -174,30 +180,46 @@ export function cooTools(_ctx: ToolCtx = {}): ToolDefinition[] {
       },
       handler: async (input) => {
         const i = input as DmGeorgesInput;
+        const georgesId = env.SLACK_GEORGES_USER_ID;
+        const mode: "dm" | "channel_mention" = georgesId ? "dm" : "channel_mention";
+
         await logAgentAction({
           agent: "coo",
           action: "tool.dm_georges.invoked",
-          metadata: { length: i.message.length },
+          metadata: { length: i.message.length, mode },
           status: "started",
         });
         try {
+          let channel: string;
+          let text: string;
+          if (georgesId) {
+            channel = await openDmChannelFor(georgesId);
+            text = i.message;
+          } else {
+            channel = defaultChannelFor("coo");
+            text = `<!channel> ${i.message}`;
+          }
+
           const res = await postAsAgent({
             agent: "coo",
-            channel: defaultChannelFor("coo"),
-            text: `<!channel> ${i.message}`,
+            channel,
+            text,
           });
           await logAgentAction({
             agent: "coo",
             action: "tool.dm_georges.completed",
-            metadata: { slack_ts: res.ts },
+            metadata: { slack_ts: res.ts, mode },
             status: "completed",
           });
-          return { slack_ts: res.ts };
+          return { slack_ts: res.ts, mode };
         } catch (err) {
           await logAgentAction({
             agent: "coo",
             action: "tool.dm_georges.failed",
-            metadata: { error: err instanceof Error ? err.message : String(err) },
+            metadata: {
+              mode,
+              error: err instanceof Error ? err.message : String(err),
+            },
             status: "failed",
           });
           throw err;

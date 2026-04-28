@@ -3,6 +3,8 @@
 AI-powered multi-agent system for **Tamtam** — a WhatsApp Status micro-influencer
 marketing platform based in Dakar, Senegal, owned by **Lupandu SARL**.
 
+> **Status:** live on Vercel. Slack webhooks registered. Inngest synced.
+
 ## Agents
 
 - **@tamtam-social** — generates and publishes LinkedIn content
@@ -19,58 +21,137 @@ OpenAI DALL-E 3 · Resend · React Email · Tailwind · Vercel
 
 ## Branches
 
-- `main` — protected, release-ready
-- `dev`  — active development
+- `main` — production (deployed to Vercel)
+- `dev`  — active development (preview deploys on every push)
 
-See `CLAUDE.md` (forthcoming) for build sessions and architecture notes.
+## Triggering an agent
+
+### From Slack (the normal path)
+
+```text
+@tamtam-social create a LinkedIn post about <topic>
+@tamtam-growth  research <company> and draft outreach
+@tamtam-coo     what is the team status right now
+```
+
+The bot must be invited to `#tamtam-social`, `#tamtam-growth`, and
+`#tamtam-coo`. Approval messages land in the agent's own channel; the
+COO daily brief lands in `#tamtam-coo`.
+
+### Manually via HTTPS
+
+Each agent exposes a manual-trigger endpoint that emits the same
+Inngest event a Slack mention would. Useful for cron alternatives
+or admin tooling.
+
+```bash
+curl -X POST https://<your-vercel-url>/api/agents/social \
+  -H "Content-Type: application/json" \
+  -d '{"brief": "post about why WhatsApp Status beats Instagram in West Africa"}'
+
+curl -X POST https://<your-vercel-url>/api/agents/growth \
+  -H "Content-Type: application/json" \
+  -d '{"lead_id": "<uuid>"}'
+
+curl -X POST https://<your-vercel-url>/api/agents/coo \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+### Via the signed-event script (no Slack needed)
+
+`scripts/send-test-event.ts` signs a fake Slack `app_mention` payload
+with your real `SLACK_SIGNING_SECRET` and POSTs it to `/api/slack/events`.
+Drives the full pipeline without typing in Slack.
+
+```bash
+npm run test:event -- social "create a post about Tamtam"
+npm run test:event -- growth "research Sunugal e-commerce in Dakar"
+npm run test:event -- coo    "summarise the last 24h"
+```
+
+Reads `APP_URL` (defaults to `http://localhost:3000`) and the Slack
+channel ids from env. Pull env locally first with `vercel env pull`.
+
+## Health endpoint
+
+```bash
+curl https://<your-vercel-url>/api/health
+```
+
+Returns 200 when Supabase, Slack, Inngest, and the env contract all
+pass; 503 otherwise. Safe to point an uptime monitor at.
+
+## Dashboards
+
+| Service | Dashboard |
+|---|---|
+| Vercel | https://vercel.com/dashboard → tamtam-agents |
+| Supabase | https://supabase.com/dashboard |
+| Inngest | https://app.inngest.com |
+| Slack app | https://api.slack.com/apps |
+| Resend | https://resend.com/emails |
+| Anthropic | https://console.anthropic.com |
+| OpenAI | https://platform.openai.com |
 
 ## Environment Setup
 
-### Local development
-
-1. Copy `.env.example` to `.env.local`:
-   ```bash
-   cp .env.example .env.local
-   ```
-2. Fill in real values for every key in `.env.local`. Some come from
-   third-party dashboards (Slack, Supabase, Anthropic, OpenAI, Resend,
-   Inngest, LinkedIn) — see each section header in `.env.example`.
-3. **Never commit `.env.local`.** It is in `.gitignore` (along with
-   `.env`, `.env.local`, and `.env*.local`). If you ever see one of
-   these tracked, treat it as a credential leak and rotate the keys.
-
 ### Production (Vercel)
 
-Set every variable from `.env.example` in the Vercel dashboard:
+Vercel's dashboard is the source of truth for secrets:
 
-> Settings → Environment Variables → add each key for `Production`
-> (and `Preview` if you want preview deployments to be live).
+> Project Settings → Environment Variables → add each key from
+> `.env.example` for **Production**, **Preview**, and **Development**.
 
-Do **not** ship a `.env` or `.env.local` to Vercel — Vercel reads its
-own dashboard values, not files in the repo.
+Webhook URLs (paste *after* the first deploy gives you a stable URL):
+
+- Slack → Event Subscriptions → Request URL: `https://<vercel-url>/api/slack/events`
+- Slack → Interactivity & Shortcuts → Request URL: `https://<vercel-url>/api/slack/interactions`
+- Inngest → Apps → Sync app → URL: `https://<vercel-url>/api/inngest`
+
+### Local development (when you actually need it)
+
+This is a webhook-heavy app — Slack can't reach `localhost` without an
+ngrok tunnel, so most iteration happens via preview deploys. Local dev
+is useful only for running scripts or iterating on agent prompts.
+
+```bash
+npm i -g vercel
+vercel link                        # one-time, links to the Vercel project
+vercel env pull .env.local --yes  # pull all dev-scoped vars
+npm run dev                        # next dev on :3000
+# when done:
+rm .env.local                      # keep disk clean
+```
+
+`.env.local` is gitignored (along with `.env`, `.env*.local`) and can
+never be committed.
 
 ### Validation at runtime
 
-`lib/env.ts` exports `validateEnv()`, which is called at the top of
-every API route and Inngest function. If any required variable is
-missing, the request fails fast with a 500 listing exactly which keys
-are absent (see `MissingEnvError`). Misconfiguration surfaces on the
-first request rather than at some arbitrary later code path.
-
-The full required list is the const `REQUIRED_ENV_VARS` in
-`lib/env.ts`. Optional variables (e.g. `ANTHROPIC_MODEL`,
-`LINKEDIN_PAGE_ID`, `SUPABASE_STORAGE_BUCKET`) are not in that list
-and have sensible defaults.
+`lib/env.ts` exports `validateEnv()` (and a non-throwing `checkEnv()`),
+called at the top of every API route. Misconfiguration returns a 500
+listing exactly which keys are missing (`MissingEnvError`). The required
+list is the const `REQUIRED_ENV_VARS`. Optional variables
+(`ANTHROPIC_MODEL`, `LINKEDIN_PAGE_ID`, `SUPABASE_STORAGE_BUCKET`,
+`SLACK_GEORGES_USER_ID`) are not in that list and have sensible
+defaults or graceful fallbacks.
 
 ### Generating Supabase types
 
 `types/database.ts` is hand-written to match `supabase gen types
-typescript` output. Once the Supabase project is provisioned and
-the CLI is authenticated, regenerate it:
+typescript` output. To regenerate from a real Supabase project:
 
 ```bash
-npx supabase gen types typescript \
-  --project-id <project-ref> > types/database.ts
+# Option A: pull-gen-delete
+vercel env pull .env.local --yes && \
+  npx supabase gen types typescript \
+    --project-id "$(node -e "console.log(process.env.NEXT_PUBLIC_SUPABASE_URL.split('.')[0].split('//')[1])")" \
+    > types/database.ts && \
+  rm .env.local
+
+# Option B: pass the project ref directly
+npx supabase gen types typescript --project-id <ref> > types/database.ts
 ```
 
-The hand-written file becomes a drop-in replacement target.
+If the generated file differs from the hand-written one, commit on `dev`.
