@@ -13,7 +13,7 @@
 
 import type { ToolDefinition } from "@/lib/anthropic";
 import { generateText } from "@/lib/anthropic";
-import { generatePostImage } from "@/lib/openai";
+// import { generatePostImage } from "@/lib/openai";  // see TODO on generate_image below
 import {
   attachSlackTsToApproval,
   createApproval,
@@ -22,7 +22,7 @@ import {
   getPost,
   logAgentAction,
   updatePostStatus,
-  uploadImageToStorage,
+  // uploadImageToStorage,  // see TODO on generate_image below
 } from "@/lib/supabase";
 import {
   buildApprovalBlocks,
@@ -153,8 +153,10 @@ export function socialTools(ctx: ToolCtx = {}): ToolDefinition[] {
     {
       name: "generate_image",
       description:
-        "Generate a visual via DALL-E 3 and store it in Supabase Storage. " +
-        "Returns a public URL the post can reference.",
+        "Generate a visual for the post. Returns a public URL the post " +
+        "can reference. Currently STUBBED with a placeholder image while " +
+        "OpenAI billing is being activated; the agent should still call " +
+        "this tool — it just gets back a placeholder URL.",
       input_schema: {
         type: "object",
         properties: {
@@ -166,48 +168,33 @@ export function socialTools(ctx: ToolCtx = {}): ToolDefinition[] {
         },
         required: ["prompt"],
       },
+      // TODO: restore DALL-E once OpenAI billing is active.
+      // Real implementation: call generatePostImage(prompt) from
+      // lib/openai.ts, then uploadImageToStorage() from lib/supabase.ts,
+      // and return { url, path, revised_prompt } as before.
       handler: async (input) => {
         const i = input as GenerateImageInput;
+        console.log("[social/tools] generate_image stubbed — prompt:", i.prompt);
+
         await logAgentAction({
           agent: "social",
-          action: "tool.generate_image.started",
-          metadata: { prompt: i.prompt, size: i.size ?? "1024x1024" },
-          status: "started",
-        });
-        try {
-          const image = await generatePostImage({
+          action: "tool.generate_image.stubbed",
+          metadata: {
             prompt: i.prompt,
-            size: i.size,
-          });
-          const path = `social/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
-          const upload = await uploadImageToStorage({
-            pathInBucket: path,
-            bytes: image.bytes,
-            contentType: image.contentType,
-          });
-          await logAgentAction({
-            agent: "social",
-            action: "tool.generate_image.completed",
-            metadata: {
-              path: upload.path,
-              revised_prompt: image.revisedPrompt,
-            },
-            status: "completed",
-          });
-          return {
-            url: upload.publicUrl,
-            path: upload.path,
-            revised_prompt: image.revisedPrompt,
-          };
-        } catch (err) {
-          await logAgentAction({
-            agent: "social",
-            action: "tool.generate_image.failed",
-            metadata: { error: err instanceof Error ? err.message : String(err) },
-            status: "failed",
-          });
-          throw err;
-        }
+            size: i.size ?? "1024x1024",
+            reason: "openai_billing_inactive",
+          },
+          status: "completed",
+        });
+
+        // Reliable, Slack-renderable placeholder. Replace once DALL-E
+        // is back online.
+        return {
+          url: "https://placehold.co/1200x630/1a1a2e/ffffff?text=Tamtam+Post",
+          path: "placeholder",
+          revised_prompt: null,
+          stubbed: true,
+        };
       },
     },
 
