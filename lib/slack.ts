@@ -244,30 +244,27 @@ export function defaultChannelFor(agent: AgentName): string {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Mention parsing                                                           */
+/*  Channel routing                                                           */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Map a Slack `app_mention` payload to one of our three agents based on
- * trigger keywords in the message body. We only have one bot user, so we
- * cannot route by user_id alone — we route by name keyword instead.
+ * Map a Slack channel id to the agent that owns that channel.
  *
- * Returns null if the mention doesn't reference a specific agent so the
- * caller can ignore (or default) it.
+ * We only have one bot user across three agent personas, so the channel
+ * a mention came from is the most reliable routing signal — `text`
+ * carries the user's request, not the agent name.
+ *
+ * Returns null when the mention came from a channel we don't track; the
+ * caller can then ACK and ignore.
+ *
+ * IMPORTANT: SLACK_CHANNEL_{SOCIAL,GROWTH,COO} must be Slack channel
+ * ids (e.g. `C0123456789`), not channel names (`#tamtam-social`). Names
+ * are not what Slack puts on the event payload.
  */
-export function detectAgentFromMention(text: string): AgentName | null {
-  const lower = text.toLowerCase();
-  // Order matters: a single message could in theory reference more than
-  // one agent; we route by first match in priority order.
-  if (/\btamtam[\s-]?social\b/.test(lower) || /\bsocial\b/.test(lower)) {
-    return "social";
-  }
-  if (/\btamtam[\s-]?growth\b/.test(lower) || /\bgrowth\b/.test(lower)) {
-    return "growth";
-  }
-  if (/\btamtam[\s-]?coo\b/.test(lower) || /\bcoo\b/.test(lower)) {
-    return "coo";
-  }
+export function detectAgentFromChannel(channelId: string): AgentName | null {
+  if (channelId === env.SLACK_CHANNEL_SOCIAL) return "social";
+  if (channelId === env.SLACK_CHANNEL_GROWTH) return "growth";
+  if (channelId === env.SLACK_CHANNEL_COO) return "coo";
   return null;
 }
 
