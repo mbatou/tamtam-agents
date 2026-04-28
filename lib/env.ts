@@ -49,6 +49,14 @@ export const env = {
   get SLACK_CHANNEL_COO(): string {
     return required("SLACK_CHANNEL_COO");
   },
+  /**
+   * Optional. When set, the COO `dm_georges` tool opens a real DM with
+   * Georges via `conversations.open`. When unset, escalations fall back
+   * to an `@channel` post in #tamtam-coo.
+   */
+  get SLACK_GEORGES_USER_ID(): string | undefined {
+    return optional("SLACK_GEORGES_USER_ID");
+  },
 
   // ─── Supabase ───────────────────────────────────────────────────────
   get NEXT_PUBLIC_SUPABASE_URL(): string {

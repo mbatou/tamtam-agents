@@ -200,6 +200,31 @@ export function isApprovalActionId(actionId: string): boolean {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Direct messages                                                           */
+/* -------------------------------------------------------------------------- */
+
+const dmChannelCache = new Map<string, string>();
+
+/**
+ * Resolve (and cache) the DM channel id for a Slack user via
+ * `conversations.open`. Returns the channel id you can pass to
+ * `chat.postMessage` to land a real DM.
+ */
+export async function openDmChannelFor(userId: string): Promise<string> {
+  const cached = dmChannelCache.get(userId);
+  if (cached) return cached;
+
+  const res = await getSlackWeb().conversations.open({ users: userId });
+  if (!res.ok || !res.channel?.id) {
+    throw new Error(
+      `[slack] conversations.open(${userId}) failed: ${res.error ?? "unknown"}`,
+    );
+  }
+  dmChannelCache.set(userId, res.channel.id);
+  return res.channel.id;
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Per-agent default channel                                                 */
 /* -------------------------------------------------------------------------- */
 
