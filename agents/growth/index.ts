@@ -1,15 +1,17 @@
 /**
- * Growth agent entrypoint. See agents/social/index.ts for the pattern.
+ * Growth agent entrypoint.
  */
 
 import { runWithTools } from "@/lib/anthropic";
 import { logAgentAction } from "@/lib/supabase";
 import { GROWTH_SYSTEM_PROMPT } from "./system-prompt";
-import { growthTools } from "./tools";
+import { growthTools, type SlackContext } from "./tools";
 
 export interface RunGrowthAgentInput {
   trigger: "manual" | "cron" | "approval";
+  brief?: string;
   lead_id?: string;
+  slackContext?: SlackContext;
 }
 
 export interface RunGrowthAgentResult {
@@ -24,20 +26,26 @@ export async function runGrowthAgent(
   await logAgentAction({
     agent: "growth",
     action: "run.started",
-    metadata: { trigger: input.trigger, lead_id: input.lead_id ?? null },
+    metadata: {
+      trigger: input.trigger,
+      lead_id: input.lead_id ?? null,
+      slack: input.slackContext ?? null,
+    },
     status: "started",
   });
 
   try {
-    const userPrompt = input.lead_id
-      ? `Continue working lead_id=${input.lead_id}. ` +
-        `If a draft is appropriate, prepare an outreach email and request approval.`
-      : "Find one new high-fit lead, research the right contact, and draft an outreach.";
+    const userPrompt =
+      input.brief?.trim() ??
+      (input.lead_id
+        ? `Continue working lead_id=${input.lead_id}. ` +
+          `If a draft is appropriate, prepare an outreach email and request approval.`
+        : "Find one new high-fit lead, research the right contact, and draft an outreach.");
 
     const result = await runWithTools({
       system: GROWTH_SYSTEM_PROMPT,
       user: userPrompt,
-      tools: growthTools(),
+      tools: growthTools({ slack: input.slackContext }),
     });
 
     await logAgentAction({

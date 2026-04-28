@@ -155,46 +155,10 @@ export type ApprovalInsert = Omit<Approval, "id" | "created_at"> & {
 };
 
 /* -------------------------------------------------------------------------- */
-/*  Supabase Database type (used by @supabase/supabase-js generics)           */
+/*  Supabase Database type — re-exported from /types/database.ts              */
 /* -------------------------------------------------------------------------- */
 
-export interface Database {
-  // Required by @supabase/postgrest-js v1.20+ to enable schema inference
-  // (otherwise the Tables get widened to `never`).
-  __InternalSupabase: { PostgrestVersion: "12" };
-  public: {
-    Tables: {
-      agent_logs: {
-        Row: AgentLog;
-        Insert: AgentLogInsert;
-        Update: Partial<AgentLogInsert>;
-        Relationships: [];
-      };
-      posts: {
-        Row: Post;
-        Insert: PostInsert;
-        Update: Partial<PostInsert>;
-        Relationships: [];
-      };
-      leads: {
-        Row: Lead;
-        Insert: LeadInsert;
-        Update: Partial<LeadInsert>;
-        Relationships: [];
-      };
-      approvals: {
-        Row: Approval;
-        Insert: ApprovalInsert;
-        Update: Partial<ApprovalInsert>;
-        Relationships: [];
-      };
-    };
-    Views: Record<string, never>;
-    Functions: Record<string, never>;
-    Enums: Record<string, never>;
-    CompositeTypes: Record<string, never>;
-  };
-}
+export type { Database, Json } from "./database";
 
 /* -------------------------------------------------------------------------- */
 /*  Slack interaction shapes (subset we actually consume)                     */
@@ -209,42 +173,107 @@ export interface ApprovalButtonValue {
 
 /* -------------------------------------------------------------------------- */
 /*  Inngest event payloads                                                    */
+/*                                                                            */
+/*  Naming convention: tamtam/<surface>.<verb>                                */
+/*    - tamtam/<agent>.mentioned   — a Slack @-mention triggered the agent   */
+/*    - tamtam/<agent>.run         — manual or scheduled run                  */
+/*    - tamtam/coo.tick            — COO cron + manual tick                   */
+/*    - tamtam/approval.granted    — Georges approved (post / send)           */
+/*    - tamtam/approval.rejected   — Georges rejected                         */
+/*    - tamtam/approval.edited     — Georges asked for an edit                */
 /* -------------------------------------------------------------------------- */
 
-export interface SocialJobEvent {
-  name: "agents/social.run";
+export interface SocialMentionedEvent {
+  name: "tamtam/social.mentioned";
+  data: {
+    text: string;
+    channel: string;
+    user: string;
+    thread_ts?: string;
+    event_ts: string;
+  };
+}
+
+export interface GrowthMentionedEvent {
+  name: "tamtam/growth.mentioned";
+  data: {
+    text: string;
+    channel: string;
+    user: string;
+    thread_ts?: string;
+    event_ts: string;
+  };
+}
+
+export interface CooMentionedEvent {
+  name: "tamtam/coo.mentioned";
+  data: {
+    text: string;
+    channel: string;
+    user: string;
+    thread_ts?: string;
+    event_ts: string;
+  };
+}
+
+export interface SocialRunEvent {
+  name: "tamtam/social.run";
   data: {
     trigger: "manual" | "cron" | "approval";
-    /** Optional brief from Georges or COO that seeds the post. */
     brief?: string;
   };
 }
 
-export interface GrowthJobEvent {
-  name: "agents/growth.run";
+export interface GrowthRunEvent {
+  name: "tamtam/growth.run";
   data: {
     trigger: "manual" | "cron" | "approval";
     lead_id?: string;
   };
 }
 
-export interface CooJobEvent {
-  name: "agents/coo.tick";
+export interface CooTickEvent {
+  name: "tamtam/coo.tick";
   data: {
     trigger: "cron" | "manual";
   };
 }
 
-export interface ApprovalDecisionEvent {
-  name: "approvals/decision";
+export interface ApprovalGrantedEvent {
+  name: "tamtam/approval.granted";
   data: {
     approval_id: string;
-    decision: Exclude<ApprovalDecision, "pending">;
+    agent: AgentName;
+    type: ApprovalType;
+    payload: ApprovalPayload;
+  };
+}
+
+export interface ApprovalRejectedEvent {
+  name: "tamtam/approval.rejected";
+  data: {
+    approval_id: string;
+    agent: AgentName;
+    type: ApprovalType;
+  };
+}
+
+export interface ApprovalEditedEvent {
+  name: "tamtam/approval.edited";
+  data: {
+    approval_id: string;
+    agent: AgentName;
+    type: ApprovalType;
   };
 }
 
 export type AppInngestEvent =
-  | SocialJobEvent
-  | GrowthJobEvent
-  | CooJobEvent
-  | ApprovalDecisionEvent;
+  | SocialMentionedEvent
+  | GrowthMentionedEvent
+  | CooMentionedEvent
+  | SocialRunEvent
+  | GrowthRunEvent
+  | CooTickEvent
+  | ApprovalGrantedEvent
+  | ApprovalRejectedEvent
+  | ApprovalEditedEvent;

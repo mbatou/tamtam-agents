@@ -200,6 +200,53 @@ export function isApprovalActionId(actionId: string): boolean {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Per-agent default channel                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The Slack channel each agent uses by default for approvals and replies.
+ * The COO posts the daily brief and any escalation here too.
+ */
+export function defaultChannelFor(agent: AgentName): string {
+  switch (agent) {
+    case "social":
+      return env.SLACK_CHANNEL_SOCIAL;
+    case "growth":
+      return env.SLACK_CHANNEL_GROWTH;
+    case "coo":
+      return env.SLACK_CHANNEL_COO;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Mention parsing                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Map a Slack `app_mention` payload to one of our three agents based on
+ * trigger keywords in the message body. We only have one bot user, so we
+ * cannot route by user_id alone — we route by name keyword instead.
+ *
+ * Returns null if the mention doesn't reference a specific agent so the
+ * caller can ignore (or default) it.
+ */
+export function detectAgentFromMention(text: string): AgentName | null {
+  const lower = text.toLowerCase();
+  // Order matters: a single message could in theory reference more than
+  // one agent; we route by first match in priority order.
+  if (/\btamtam[\s-]?social\b/.test(lower) || /\bsocial\b/.test(lower)) {
+    return "social";
+  }
+  if (/\btamtam[\s-]?growth\b/.test(lower) || /\bgrowth\b/.test(lower)) {
+    return "growth";
+  }
+  if (/\btamtam[\s-]?coo\b/.test(lower) || /\bcoo\b/.test(lower)) {
+    return "coo";
+  }
+  return null;
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Signature verification                                                    */
 /* -------------------------------------------------------------------------- */
 

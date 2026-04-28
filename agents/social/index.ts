@@ -10,11 +10,12 @@
 import { runWithTools } from "@/lib/anthropic";
 import { logAgentAction } from "@/lib/supabase";
 import { SOCIAL_SYSTEM_PROMPT } from "./system-prompt";
-import { socialTools } from "./tools";
+import { socialTools, type SlackContext } from "./tools";
 
 export interface RunSocialAgentInput {
   trigger: "manual" | "cron" | "approval";
   brief?: string;
+  slackContext?: SlackContext;
 }
 
 export interface RunSocialAgentResult {
@@ -29,7 +30,11 @@ export async function runSocialAgent(
   await logAgentAction({
     agent: "social",
     action: "run.started",
-    metadata: { trigger: input.trigger, brief: input.brief ?? null },
+    metadata: {
+      trigger: input.trigger,
+      brief: input.brief ?? null,
+      slack: input.slackContext ?? null,
+    },
     status: "started",
   });
 
@@ -43,7 +48,7 @@ export async function runSocialAgent(
     const result = await runWithTools({
       system: SOCIAL_SYSTEM_PROMPT,
       user: userPrompt,
-      tools: socialTools(),
+      tools: socialTools({ slack: input.slackContext }),
     });
 
     await logAgentAction({
