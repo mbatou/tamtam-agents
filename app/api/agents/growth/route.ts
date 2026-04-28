@@ -3,17 +3,29 @@
  */
 
 import { NextResponse } from "next/server";
+import { MissingEnvError, validateEnv } from "@/lib/env";
 import { inngest } from "@/lib/inngest";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request): Promise<Response> {
-  // TODO(session-2): require an admin token header (TAMTAM_ADMIN_TOKEN)
+  try {
+    validateEnv();
+  } catch (err) {
+    if (err instanceof MissingEnvError) {
+      return NextResponse.json(
+        { ok: false, error: "missing_env", missing: err.missing },
+        { status: 500 },
+      );
+    }
+    throw err;
+  }
+
   const body = (await req.json().catch(() => ({}))) as { lead_id?: string };
 
   const ids = await inngest.send({
-    name: "agents/growth.run",
+    name: "tamtam/growth.run",
     data: { trigger: "manual", lead_id: body.lead_id },
   });
 

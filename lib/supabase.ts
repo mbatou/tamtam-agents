@@ -12,6 +12,7 @@
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { env } from "./env";
+import type { Database } from "@/types/database";
 import type {
   AgentLog,
   AgentLogInsert,
@@ -21,25 +22,27 @@ import type {
   ApprovalInsert,
   ApprovalPayload,
   ApprovalType,
+  Lead,
+  LeadInsert,
+  Post,
+  PostInsert,
+  PostStatus,
 } from "@/types";
 
 /**
- * NOTE: we deliberately do NOT pass a generated `Database` generic to
- * createClient. Hand-written Database types do not satisfy supabase-js
- * v2.105's strict GenericSchema constraints (interfaces don't expose the
- * required index signatures). All type safety happens at this module's
- * exported function boundaries instead. When we run `supabase gen types`
- * in Session 2+, we'll thread that generated type back through.
+ * Typed against `types/database.ts` (a hand-written stand-in for the
+ * `supabase gen types typescript` output). Replace `types/database.ts`
+ * with the CLI-generated file and this module continues to compile.
  */
-type Client = SupabaseClient;
+type Client = SupabaseClient<Database>;
 
 let adminSingleton: Client | null = null;
 let anonSingleton: Client | null = null;
 
 export function getSupabaseAdmin(): Client {
   if (adminSingleton) return adminSingleton;
-  adminSingleton = createClient(
-    env.SUPABASE_URL,
+  adminSingleton = createClient<Database>(
+    env.NEXT_PUBLIC_SUPABASE_URL,
     env.SUPABASE_SERVICE_ROLE_KEY,
     {
       auth: { persistSession: false, autoRefreshToken: false },
@@ -51,9 +54,9 @@ export function getSupabaseAdmin(): Client {
 
 export function getSupabaseAnon(): Client {
   if (anonSingleton) return anonSingleton;
-  anonSingleton = createClient(
-    env.SUPABASE_URL,
-    env.SUPABASE_ANON_KEY,
+  anonSingleton = createClient<Database>(
+    env.NEXT_PUBLIC_SUPABASE_URL,
+    env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     {
       auth: { persistSession: false, autoRefreshToken: false },
       global: { headers: { "x-tamtam-client": "agents-anon" } },
@@ -71,16 +74,21 @@ export async function logAgentAction(
 ): Promise<AgentLog> {
   const { data, error } = await getSupabaseAdmin()
     .from("agent_logs")
-    .insert(entry)
+    .insert({
+      agent: entry.agent,
+      action: entry.action,
+      metadata: entry.metadata as Database["public"]["Tables"]["agent_logs"]["Insert"]["metadata"],
+      status: entry.status,
+    })
     .select()
-    .single<AgentLog>();
+    .single();
 
   if (error) {
     throw new Error(
       `[supabase] logAgentAction failed (${entry.agent}/${entry.action}): ${error.message}`,
     );
   }
-  return data;
+  return data as unknown as AgentLog;
 }
 
 export async function getRecentAgentLogs(
@@ -92,15 +100,172 @@ export async function getRecentAgentLogs(
     .select("*")
     .eq("agent", agent)
     .gte("created_at", sinceISO)
-    .order("created_at", { ascending: false })
-    .returns<AgentLog[]>();
+    .order("created_at", { ascending: false });
 
   if (error) {
     throw new Error(
       `[supabase] getRecentAgentLogs(${agent}) failed: ${error.message}`,
     );
   }
-  return data ?? [];
+  return (data ?? []) as unknown as AgentLog[];
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Posts                                                                     */
+/* -------------------------------------------------------------------------- */
+
+export async function createPost(input: PostInsert): Promise<Post> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("posts")
+    .insert({
+      platform: input.platform,
+      caption: input.caption,
+      image_url: input.image_url,
+      image_prompt: input.image_prompt,
+      scheduled_at: input.scheduled_at,
+      status: input.status,
+      post_id: input.post_id,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(`[supabase] createPost failed: ${error.message}`);
+  }
+  return data as unknown as Post;
+}
+
+export async function getPost(postId: string): Promise<Post> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("posts")
+    .select("*")
+    .eq("id", postId)
+    .single();
+
+  if (error) {
+    throw new Error(`[supabase] getPost(${postId}) failed: ${error.message}`);
+  }
+  return data as unknown as Post;
+}
+
+export async function updatePostStatus(input: {
+  postId: string;
+  status: PostStatus;
+  externalPostId?: string | null;
+}): Promise<Post> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("posts")
+    .update({
+      status: input.status,
+      ...(input.externalPostId !== undefined
+        ? { post_id: input.externalPostId }
+        : {}),
+    })
+    .eq("id", input.postId)
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(
+      `[supabase] updatePostStatus(${input.postId}) failed: ${error.message}`,
+    );
+  }
+  return data as unknown as Post;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Leads                                                                     */
+/* -------------------------------------------------------------------------- */
+
+export async function upsertLead(input: LeadInsert): Promise<Lead> {
+  // Idempotent on (company, email) when email is present, otherwise on company
+  // alone. We do this with a regular insert/update split because Supabase
+  // upsert needs a unique constraint declared in the DB and we don't want to
+  // assume one exists yet.
+  const supabase = getSupabaseAdmin();
+  const existingQuery = supabase
+    .from("leads")
+    .select("*")
+    .eq("company", input.company);
+
+  if (input.email) existingQuery.eq("email", input.email);
+
+  const { data: existing, error: lookupErr } = await existingQuery.maybeSingle();
+  if (lookupErr) {
+    throw new Error(`[supabase] upsertLead lookup failed: ${lookupErr.message}`);
+  }
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from("leads")
+      .update({
+        contact_name: input.contact_name ?? null,
+        email: input.email ?? null,
+        status: input.status ?? "new",
+        last_contact_at: input.last_contact_at ?? null,
+        notes: input.notes ?? null,
+      })
+      .eq("id", (existing as { id: string }).id)
+      .select()
+      .single();
+    if (error) {
+      throw new Error(`[supabase] upsertLead update failed: ${error.message}`);
+    }
+    return data as unknown as Lead;
+  }
+
+  const { data, error } = await supabase
+    .from("leads")
+    .insert({
+      company: input.company,
+      contact_name: input.contact_name ?? null,
+      email: input.email ?? null,
+      status: input.status ?? "new",
+      last_contact_at: input.last_contact_at ?? null,
+      notes: input.notes ?? null,
+    })
+    .select()
+    .single();
+  if (error) {
+    throw new Error(`[supabase] upsertLead insert failed: ${error.message}`);
+  }
+  return data as unknown as Lead;
+}
+
+export async function getLead(leadId: string): Promise<Lead> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("leads")
+    .select("*")
+    .eq("id", leadId)
+    .single();
+
+  if (error) {
+    throw new Error(`[supabase] getLead(${leadId}) failed: ${error.message}`);
+  }
+  return data as unknown as Lead;
+}
+
+export async function setLeadStatus(
+  leadId: string,
+  status: Lead["status"],
+  opts: { lastContactAt?: string } = {},
+): Promise<Lead> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("leads")
+    .update({
+      status,
+      ...(opts.lastContactAt ? { last_contact_at: opts.lastContactAt } : {}),
+    })
+    .eq("id", leadId)
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(
+      `[supabase] setLeadStatus(${leadId}) failed: ${error.message}`,
+    );
+  }
+  return data as unknown as Lead;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -122,14 +287,20 @@ export async function createApproval(input: {
 
   const { data, error } = await getSupabaseAdmin()
     .from("approvals")
-    .insert(insert)
+    .insert({
+      agent: insert.agent,
+      type: insert.type,
+      payload: insert.payload as Database["public"]["Tables"]["approvals"]["Insert"]["payload"],
+      slack_message_ts: insert.slack_message_ts,
+      decision: insert.decision,
+    })
     .select()
-    .single<Approval>();
+    .single();
 
   if (error) {
     throw new Error(`[supabase] createApproval failed: ${error.message}`);
   }
-  return data;
+  return data as unknown as Approval;
 }
 
 export async function attachSlackTsToApproval(
@@ -153,14 +324,14 @@ export async function getApproval(approvalId: string): Promise<Approval> {
     .from("approvals")
     .select("*")
     .eq("id", approvalId)
-    .single<Approval>();
+    .single();
 
   if (error) {
     throw new Error(
       `[supabase] getApproval(${approvalId}) failed: ${error.message}`,
     );
   }
-  return data;
+  return data as unknown as Approval;
 }
 
 export async function setApprovalDecision(
@@ -172,14 +343,27 @@ export async function setApprovalDecision(
     .update({ decision })
     .eq("id", approvalId)
     .select()
-    .single<Approval>();
+    .single();
 
   if (error) {
     throw new Error(
       `[supabase] setApprovalDecision(${approvalId}) failed: ${error.message}`,
     );
   }
-  return data;
+  return data as unknown as Approval;
+}
+
+export async function getPendingApprovals(): Promise<Approval[]> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("approvals")
+    .select("*")
+    .eq("decision", "pending")
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw new Error(`[supabase] getPendingApprovals failed: ${error.message}`);
+  }
+  return (data ?? []) as unknown as Approval[];
 }
 
 /* -------------------------------------------------------------------------- */
