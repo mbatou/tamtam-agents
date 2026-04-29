@@ -26,6 +26,7 @@ import {
 import { randomMoments } from "./random-moments";
 import { fridayWrapup } from "./friday-wrapup";
 import { georgesCheckin } from "./georges-checkin";
+import { teamTestReactions } from "./team-test-reactions";
 
 export const INNGEST_FUNCTIONS = [
   // Per-agent runners
@@ -46,4 +47,5 @@ export const INNGEST_FUNCTIONS = [
   randomMoments,
   fridayWrapup,
   georgesCheckin,
+  teamTestReactions,
 ] as const;

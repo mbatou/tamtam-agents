@@ -1,15 +1,16 @@
 /**
  * Slack Events API endpoint.
  *
- * Responsibilities, in order:
- *   1. Verify the Slack signing secret on every request (5-min replay window).
- *   2. Handle the one-time `url_verification` challenge.
- *   3. Parse `event_callback` payloads and route by event type.
- *   4. For `app_mention`: detect which agent was tagged, emit the matching
- *      Inngest event, and ACK with 200 immediately. ALL real work happens
- *      asynchronously inside the Inngest function — the route returns in
- *      well under Slack's 3-second timeout.
- *   5. Validate env on every request (cheap; surfaces misconfiguration loudly).
+ * Pipeline (in order):
+ *   1. validateEnv()                 — fail fast if Vercel is misconfigured
+ *   2. verify Slack signing secret   — 5-minute replay window
+ *   3. parse JSON                    — handle url_verification handshake
+ *   4. STRICT bot guard              — drop anything with bot_id (loop guard)
+ *   5. team-channel branch           — special commands + Georges check-in
+ *   6. agent-channel branch          — app_mention → routed by channel id
+ *
+ * Side effects: emits exactly one Inngest event per request (or zero if
+ * the request is ignored). Returns 200 in well under Slack's 3s timeout.
  */
 
 import { NextResponse } from "next/server";
@@ -31,30 +32,18 @@ interface SlackUrlVerification {
   token?: string;
 }
 
-interface SlackAppMentionEvent {
-  type: "app_mention";
-  user: string;
-  text: string;
-  ts: string;
-  channel: string;
-  event_ts: string;
-  thread_ts?: string;
-  /** Slack populates this when the source is a bot/integration user. */
-  bot_id?: string;
-}
-
 /**
- * Subset of Slack's `message` event we care about for the Georges
- * check-in detector. Subscribe to `message.channels` in the Slack app
- * dashboard to actually receive these.
+ * Common shape across the event types we care about. Slack stamps
+ * `bot_id` whenever the source is a bot/integration user — our strict
+ * guard drops everything that has it set.
  */
-interface SlackMessageEvent {
-  type: "message";
+interface SlackInboundEvent {
+  type: string;
   user?: string;
   text?: string;
-  ts: string;
-  channel: string;
-  event_ts: string;
+  ts?: string;
+  channel?: string;
+  event_ts?: string;
   thread_ts?: string;
   bot_id?: string;
   /** Set on edits, deletes, etc. — we ignore those. */
@@ -65,19 +54,47 @@ interface SlackEventCallback {
   type: "event_callback";
   event_id: string;
   event_time: number;
-  event:
-    | SlackAppMentionEvent
-    | SlackMessageEvent
-    | { type: string; bot_id?: string };
+  event: SlackInboundEvent;
 }
 
 type SlackPayload = SlackUrlVerification | SlackEventCallback;
 
-const MENTION_EVENT_NAME: Record<AgentName, "tamtam/social.mentioned" | "tamtam/growth.mentioned" | "tamtam/coo.mentioned"> = {
+const MENTION_EVENT_NAME: Record<
+  AgentName,
+  "tamtam/social.mentioned" | "tamtam/growth.mentioned" | "tamtam/coo.mentioned"
+> = {
   social: "tamtam/social.mentioned",
   growth: "tamtam/growth.mentioned",
   coo: "tamtam/coo.mentioned",
 };
+
+/* -------------------------------------------------------------------------- */
+/*  Team-channel command parser                                               */
+/* -------------------------------------------------------------------------- */
+
+type TeamCommand =
+  | { kind: "standup" }
+  | { kind: "wrapup" }
+  | { kind: "moment" }
+  | { kind: "test_reactions" };
+
+/**
+ * Lightweight prefix-match for ops-style commands typed into
+ * #tamtam-team. Case-insensitive substring match — Georges can wrap
+ * with whatever phrasing he wants ("hey Rama, trigger standup please").
+ */
+function detectTeamCommand(text: string): TeamCommand | null {
+  const lower = text.toLowerCase();
+  if (lower.includes("trigger standup")) return { kind: "standup" };
+  if (lower.includes("trigger wrapup")) return { kind: "wrapup" };
+  if (lower.includes("trigger moment")) return { kind: "moment" };
+  if (lower.includes("trigger reactions")) return { kind: "test_reactions" };
+  return null;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Handler                                                                   */
+/* -------------------------------------------------------------------------- */
 
 export async function POST(req: Request): Promise<Response> {
   try {
@@ -123,8 +140,6 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   if (payload.type !== "event_callback") {
-    // Defensive: TS proves this is unreachable given the union, but the
-    // wire format may evolve and we want the gate (and the log) intact.
     console.log("[slack/events] ignored non_event_callback");
     return NextResponse.json({ ok: true, ignored: "non_event_callback" });
   }
@@ -132,62 +147,99 @@ export async function POST(req: Request): Promise<Response> {
   const event = payload.event;
   console.log("[slack/events] event:", JSON.stringify(event));
 
-  // Bot-loop guard. Drop bot-originated events EXCEPT app_mention so we
-  // never react to our own messages or to other integrations' chatter.
-  // Critical: keep app_mention through this gate, even if Slack stamped
-  // a bot_id on it (e.g., a workflow @-mentioned us) — that is a
-  // legitimate request to act.
-  if (
-    "bot_id" in event &&
-    event.bot_id &&
-    event.type !== "app_mention"
-  ) {
+  // STRICT bot guard. Any event from a bot — including bot-originated
+  // app_mentions — is dropped. This is the loop guard for #tamtam-team:
+  // Awa/Kofi/Rama post there as the bot, those messages carry bot_id,
+  // we never react to our own.
+  if (event.bot_id) {
     console.log(
-      "[slack/events] ignored bot-originated event:",
-      event.type,
-      "bot_id=",
+      "[slack/events] ignored bot message — bot_id=",
       event.bot_id,
+      "type=",
+      event.type,
     );
-    return NextResponse.json({ ok: true, ignored: "bot_event" });
+    return NextResponse.json({ ok: true, ignored: "bot_message" });
   }
 
-  // Georges check-in path: a plain `message` in #tamtam-team from
-  // Georges (no @-mention). Requires SLACK_GEORGES_USER_ID and
-  // SLACK_CHANNEL_TEAM to be set, plus the Slack app subscribed to
-  // `message.channels`. Silently no-ops otherwise.
-  if (event.type === "message") {
-    const msg = event as SlackMessageEvent;
-    const georgesId = env.SLACK_GEORGES_USER_ID;
-    const teamChannel = env.SLACK_CHANNEL_TEAM;
+  // Edits, deletes, etc. — never act on those.
+  if (event.subtype) {
+    console.log("[slack/events] ignored — subtype:", event.subtype);
+    return NextResponse.json({ ok: true, ignored: `subtype_${event.subtype}` });
+  }
 
-    if (!georgesId || !teamChannel) {
+  const channelId = event.channel ?? "";
+  const text = event.text ?? "";
+
+  /* ────────────────────────────────────────────────────────────────────── */
+  /*  Branch A: #tamtam-team — special handling                             */
+  /* ────────────────────────────────────────────────────────────────────── */
+
+  const teamChannel = env.SLACK_CHANNEL_TEAM;
+  if (teamChannel && channelId === teamChannel) {
+    // Empty text shouldn't reach this branch (subtype guard catches edits)
+    // but be defensive anyway.
+    if (text.trim().length === 0) {
+      console.log("[slack/events] team-channel message ignored — empty text");
+      return NextResponse.json({ ok: true, ignored: "empty_text" });
+    }
+
+    // Named ops commands first. These work regardless of who typed them
+    // (Georges or anyone else with channel access).
+    const command = detectTeamCommand(text);
+    if (command) {
+      console.log("[slack/events] team command detected:", command.kind);
+      switch (command.kind) {
+        case "standup":
+          await inngest.send({
+            name: "tamtam/team.standup",
+            data: { trigger: "manual" },
+          });
+          break;
+        case "wrapup":
+          await inngest.send({
+            name: "tamtam/team.friday-wrapup",
+            data: { trigger: "manual" },
+          });
+          break;
+        case "moment":
+          await inngest.send({
+            name: "tamtam/team.random-moment",
+            data: { trigger: "manual", slot: "manual" },
+          });
+          break;
+        case "test_reactions":
+          await inngest.send({
+            name: "tamtam/team.test-reactions",
+            data: { trigger: "manual" },
+          });
+          break;
+      }
+      return NextResponse.json({ ok: true, dispatched: `team.${command.kind}` });
+    }
+
+    // No command, no @-mention. Treat as Georges checking in. (We only
+    // route check-ins from the configured Georges user id; otherwise
+    // we'd respond to every team member who joins the channel.)
+    const georgesId = env.SLACK_GEORGES_USER_ID;
+    if (!georgesId) {
       console.log(
-        "[slack/events] message event arrived but Georges/team channel not configured — ignoring",
+        "[slack/events] team-channel message ignored — SLACK_GEORGES_USER_ID not set",
       );
       return NextResponse.json({ ok: true, ignored: "checkin_disabled" });
     }
-    if (msg.channel !== teamChannel) {
-      console.log("[slack/events] message ignored — not in team channel");
-      return NextResponse.json({ ok: true, ignored: "not_team_channel" });
-    }
-    if (msg.user !== georgesId) {
-      console.log("[slack/events] message ignored — not from Georges");
+    if (event.user !== georgesId) {
+      console.log(
+        "[slack/events] team-channel message ignored — not from Georges (user=",
+        event.user,
+        ")",
+      );
       return NextResponse.json({ ok: true, ignored: "not_georges" });
     }
-    if (msg.subtype) {
-      console.log("[slack/events] message ignored — subtype:", msg.subtype);
-      return NextResponse.json({ ok: true, ignored: `subtype_${msg.subtype}` });
-    }
-    if (!msg.text || msg.text.trim().length === 0) {
-      console.log("[slack/events] message ignored — empty text");
-      return NextResponse.json({ ok: true, ignored: "empty_text" });
-    }
-    // If the text contains an @-mention of the bot, the app_mention
-    // event will arrive separately and that path handles it. Don't
-    // double-respond.
-    if (msg.text.includes("<@")) {
+    // Skip messages that contain a bot @-mention — the app_mention
+    // event arrives separately and the per-agent path handles it.
+    if (text.includes("<@")) {
       console.log(
-        "[slack/events] message ignored — contains @-mention, will be handled by app_mention path",
+        "[slack/events] team-channel message ignored — contains @-mention",
       );
       return NextResponse.json({ ok: true, ignored: "has_mention" });
     }
@@ -195,38 +247,38 @@ export async function POST(req: Request): Promise<Response> {
     await inngest.send({
       name: "tamtam/georges.checkin",
       data: {
-        text: msg.text,
-        channel: msg.channel,
-        user: msg.user,
-        event_ts: msg.event_ts,
-        thread_ts: msg.thread_ts,
+        text,
+        channel: channelId,
+        user: event.user ?? "",
+        event_ts: event.event_ts ?? event.ts ?? "",
+        thread_ts: event.thread_ts,
       },
     });
     console.log("[slack/events] inngest event emitted: tamtam/georges.checkin");
     return NextResponse.json({ ok: true, dispatched: "georges_checkin" });
   }
 
+  /* ────────────────────────────────────────────────────────────────────── */
+  /*  Branch B: agent channels — app_mention routes by channel              */
+  /* ────────────────────────────────────────────────────────────────────── */
+
   if (event.type !== "app_mention") {
     console.log("[slack/events] ignored event type:", event.type);
     return NextResponse.json({ ok: true, ignored: event.type });
   }
 
-  const mention = event as SlackAppMentionEvent;
-  const agent = detectAgentFromChannel(mention.channel);
+  const agent = detectAgentFromChannel(channelId);
   console.log(
     "[slack/events] routing by channel:",
-    mention.channel,
+    channelId,
     "→ agent:",
     agent,
   );
 
   if (!agent) {
-    // The bot was @-mentioned in a channel we don't track (or
-    // SLACK_CHANNEL_* env vars hold names instead of channel ids — names
-    // are not what Slack puts on the event payload).
     console.log(
       "[slack/events] no agent matched channel — channel was:",
-      mention.channel,
+      channelId,
       "expected one of:",
       env.SLACK_CHANNEL_SOCIAL,
       env.SLACK_CHANNEL_GROWTH,
@@ -235,33 +287,32 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ ok: true, ignored: "unrecognized_channel" });
   }
 
-  // Fire-and-ack: emit the Inngest event and return immediately. Logging
-  // also goes through Inngest's pipeline implicitly via the agent runner,
-  // but we record receipt here too so /api/slack/events ↔ agent runs are
-  // traceable end-to-end.
   await Promise.all([
     inngest.send({
       name: MENTION_EVENT_NAME[agent],
       data: {
-        text: mention.text,
-        channel: mention.channel,
-        user: mention.user,
-        thread_ts: mention.thread_ts,
-        event_ts: mention.event_ts,
+        text,
+        channel: channelId,
+        user: event.user ?? "",
+        thread_ts: event.thread_ts,
+        event_ts: event.event_ts ?? event.ts ?? "",
       },
     }),
     logAgentAction({
       agent,
       action: "slack.mention.received",
       metadata: {
-        channel: mention.channel,
-        user: mention.user,
-        ts: mention.event_ts,
+        channel: channelId,
+        user: event.user ?? null,
+        ts: event.event_ts ?? event.ts ?? null,
       },
       status: "started",
-    }).catch(() => undefined), // never let logging failures block ACK
+    }).catch(() => undefined),
   ]);
 
-  console.log("[slack/events] inngest event emitted:", MENTION_EVENT_NAME[agent]);
+  console.log(
+    "[slack/events] inngest event emitted:",
+    MENTION_EVENT_NAME[agent],
+  );
   return NextResponse.json({ ok: true, dispatched: agent });
 }
