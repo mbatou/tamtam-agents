@@ -26,16 +26,19 @@ import type {
 export const PERSONAS: Record<AgentName, AgentPersona> = {
   social: {
     name: "social",
+    firstName: "Awa",
     username: "🎨 Tamtam Social",
     iconEmoji: ":art:",
   },
   growth: {
     name: "growth",
+    firstName: "Kofi",
     username: "📈 Tamtam Growth",
     iconEmoji: ":chart_with_upwards_trend:",
   },
   coo: {
     name: "coo",
+    firstName: "Rama",
     username: "🧠 Tamtam COO",
     iconEmoji: ":brain:",
   },
@@ -275,6 +278,18 @@ export function defaultChannelFor(agent: AgentName): string {
     case "coo":
       return env.SLACK_CHANNEL_COO;
   }
+}
+
+/**
+ * The shared inter-agent channel (#tamtam-team).
+ *
+ * Returns null when SLACK_CHANNEL_TEAM is not configured. Callers
+ * (team-standup, team-reactions, random-moments, friday-wrapup, the
+ * Georges check-in detector) should treat null as "feature disabled,
+ * skip and log" — never throw.
+ */
+export function teamChannelOrNull(): string | null {
+  return env.SLACK_CHANNEL_TEAM ?? null;
 }
 
 /* -------------------------------------------------------------------------- */

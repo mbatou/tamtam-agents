@@ -19,6 +19,7 @@ import {
   updateAgentMessage,
 } from "@/lib/slack";
 import { sendOutreachEmail } from "@/lib/resend";
+import { inngest } from "@/lib/inngest";
 import OutreachEmail from "@/emails/outreach-template";
 import { createElement } from "react";
 import type {
@@ -141,6 +142,20 @@ export function growthTools(ctx: ToolCtx = {}): ToolDefinition[] {
             },
             status: "completed",
           });
+
+          // Fan out to the team: triggers Awa reacting in #tamtam-team
+          // (asks Kofi about the brand). Best-effort.
+          await inngest
+            .send({
+              name: "tamtam/lead.researched",
+              data: {
+                lead_id: lead.id,
+                company: lead.company,
+                notes: notes ?? null,
+              },
+            })
+            .catch(() => undefined);
+
           return { lead_id: lead.id, status: lead.status, notes };
         } catch (err) {
           await logAgentAction({

@@ -30,6 +30,7 @@ import {
   postAsAgent,
   updateAgentMessage,
 } from "@/lib/slack";
+import { inngest } from "@/lib/inngest";
 import type {
   ApprovalPayloadLinkedinPost,
   Post,
@@ -438,6 +439,20 @@ export async function publishApprovedPost(
       },
       status: "completed",
     });
+
+    // Fan out to the team: this is what triggers Kofi reacting in
+    // #tamtam-team via team-reactions. Best-effort — don't let an
+    // event-bus hiccup undo the publish.
+    await inngest
+      .send({
+        name: "tamtam/post.published",
+        data: {
+          post_id: updated.id,
+          external_post_id: mockExternalId,
+          caption: updated.caption,
+        },
+      })
+      .catch(() => undefined);
 
     return {
       post_id: updated.id,

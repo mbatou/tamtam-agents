@@ -5,14 +5,19 @@ marketing platform based in Dakar, Senegal, owned by **Lupandu SARL**.
 
 > **Status:** live on Vercel. Slack webhooks registered. Inngest synced.
 
-## Agents
+## The team
 
-- **@tamtam-social** — generates and publishes LinkedIn content
-- **@tamtam-growth** — researches leads and runs outreach
-- **@tamtam-coo** — orchestrates, monitors, and reports
+- **Awa** — `@tamtam-social` — creative voice; generates and publishes LinkedIn content
+- **Kofi** — `@tamtam-growth` — sharp prospector; researches leads and runs outreach
+- **Rama** — `@tamtam-coo` — calm operator; orchestrates, monitors, reports
 
 All three operate as Slack teammates inside the **Lupandu SAS** workspace.
 The only human in the loop is **Georges**, who approves consequential actions.
+
+The team also lives together in **#tamtam-team** — morning standups
+from Rama, inter-agent reactions when a post ships or a lead lands,
+random "human moments" sprinkled through the week, and a Friday
+wrap-up. Georges can drop in, say hello, and get a real response.
 
 ## Stack
 
@@ -108,6 +113,22 @@ Webhook URLs (paste *after* the first deploy gives you a stable URL):
 - Slack → Event Subscriptions → Request URL: `https://<vercel-url>/api/slack/events`
 - Slack → Interactivity & Shortcuts → Request URL: `https://<vercel-url>/api/slack/interactions`
 - Inngest → Apps → Sync app → URL: `https://<vercel-url>/api/inngest`
+
+### Slack subscriptions for #tamtam-team
+
+For the Georges check-in detector to receive plain messages (not just
+`@`-mentions), the Slack app must be subscribed to additional events:
+
+- Slack app → **Event Subscriptions** → **Subscribe to bot events**
+  → add `message.channels`
+- Slack app → **OAuth & Permissions** → bot scopes → ensure
+  `channels:history` is present (it usually is for `app_mention` apps,
+  but double-check after adding `message.channels`)
+- Reinstall the app to the workspace if Slack prompts for it
+- Invite the bot to `#tamtam-team` (`/invite @<bot-name>`)
+
+Without these the detector silently no-ops — `@`-mentions and existing
+flows keep working.
 
 ### Local development (when you actually need it)
 
