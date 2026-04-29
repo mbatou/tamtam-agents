@@ -125,6 +125,12 @@ export interface ApprovalPayloadLinkedinPost {
   post_id: string;
   caption: string;
   image_url: string | null;
+  /**
+   * The prompt used to generate the image. Surfaced in the approval
+   * Slack message when the URL is a stub/external host (Slack only
+   * renders inline images that live on https://files.slack.com).
+   */
+  image_prompt: string | null;
 }
 
 export interface ApprovalPayloadOutreachEmail {
