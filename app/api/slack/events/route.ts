@@ -43,11 +43,32 @@ interface SlackAppMentionEvent {
   bot_id?: string;
 }
 
+/**
+ * Subset of Slack's `message` event we care about for the Georges
+ * check-in detector. Subscribe to `message.channels` in the Slack app
+ * dashboard to actually receive these.
+ */
+interface SlackMessageEvent {
+  type: "message";
+  user?: string;
+  text?: string;
+  ts: string;
+  channel: string;
+  event_ts: string;
+  thread_ts?: string;
+  bot_id?: string;
+  /** Set on edits, deletes, etc. — we ignore those. */
+  subtype?: string;
+}
+
 interface SlackEventCallback {
   type: "event_callback";
   event_id: string;
   event_time: number;
-  event: SlackAppMentionEvent | { type: string; bot_id?: string };
+  event:
+    | SlackAppMentionEvent
+    | SlackMessageEvent
+    | { type: string; bot_id?: string };
 }
 
 type SlackPayload = SlackUrlVerification | SlackEventCallback;
@@ -128,6 +149,61 @@ export async function POST(req: Request): Promise<Response> {
       event.bot_id,
     );
     return NextResponse.json({ ok: true, ignored: "bot_event" });
+  }
+
+  // Georges check-in path: a plain `message` in #tamtam-team from
+  // Georges (no @-mention). Requires SLACK_GEORGES_USER_ID and
+  // SLACK_CHANNEL_TEAM to be set, plus the Slack app subscribed to
+  // `message.channels`. Silently no-ops otherwise.
+  if (event.type === "message") {
+    const msg = event as SlackMessageEvent;
+    const georgesId = env.SLACK_GEORGES_USER_ID;
+    const teamChannel = env.SLACK_CHANNEL_TEAM;
+
+    if (!georgesId || !teamChannel) {
+      console.log(
+        "[slack/events] message event arrived but Georges/team channel not configured — ignoring",
+      );
+      return NextResponse.json({ ok: true, ignored: "checkin_disabled" });
+    }
+    if (msg.channel !== teamChannel) {
+      console.log("[slack/events] message ignored — not in team channel");
+      return NextResponse.json({ ok: true, ignored: "not_team_channel" });
+    }
+    if (msg.user !== georgesId) {
+      console.log("[slack/events] message ignored — not from Georges");
+      return NextResponse.json({ ok: true, ignored: "not_georges" });
+    }
+    if (msg.subtype) {
+      console.log("[slack/events] message ignored — subtype:", msg.subtype);
+      return NextResponse.json({ ok: true, ignored: `subtype_${msg.subtype}` });
+    }
+    if (!msg.text || msg.text.trim().length === 0) {
+      console.log("[slack/events] message ignored — empty text");
+      return NextResponse.json({ ok: true, ignored: "empty_text" });
+    }
+    // If the text contains an @-mention of the bot, the app_mention
+    // event will arrive separately and that path handles it. Don't
+    // double-respond.
+    if (msg.text.includes("<@")) {
+      console.log(
+        "[slack/events] message ignored — contains @-mention, will be handled by app_mention path",
+      );
+      return NextResponse.json({ ok: true, ignored: "has_mention" });
+    }
+
+    await inngest.send({
+      name: "tamtam/georges.checkin",
+      data: {
+        text: msg.text,
+        channel: msg.channel,
+        user: msg.user,
+        event_ts: msg.event_ts,
+        thread_ts: msg.thread_ts,
+      },
+    });
+    console.log("[slack/events] inngest event emitted: tamtam/georges.checkin");
+    return NextResponse.json({ ok: true, dispatched: "georges_checkin" });
   }
 
   if (event.type !== "app_mention") {

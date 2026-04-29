@@ -17,6 +17,8 @@ export type AgentStatus = "ok" | "pending" | "error" | "blocked" | "idle";
 export interface AgentPersona {
   /** Internal identifier used across the codebase. */
   name: AgentName;
+  /** Human first name the agent goes by inside the team. */
+  firstName: string;
   /** Display name shown in Slack via chat.write.customize. */
   username: string;
   /** Slack icon_emoji shown in Slack via chat.write.customize. */
@@ -273,6 +275,58 @@ export interface ApprovalEditedEvent {
   };
 }
 
+/* -------------------------------------------------------------------------- */
+/*  Team-life events (Session 4)                                              */
+/* -------------------------------------------------------------------------- */
+
+export interface PostPublishedEvent {
+  name: "tamtam/post.published";
+  data: {
+    post_id: string;
+    external_post_id: string;
+    caption: string;
+  };
+}
+
+export interface LeadResearchedEvent {
+  name: "tamtam/lead.researched";
+  data: {
+    lead_id: string;
+    company: string;
+    notes: string | null;
+  };
+}
+
+export interface GeorgesCheckinEvent {
+  name: "tamtam/georges.checkin";
+  data: {
+    text: string;
+    channel: string;
+    user: string;
+    event_ts: string;
+    thread_ts?: string;
+  };
+}
+
+export interface TeamStandupCronEvent {
+  name: "tamtam/team.standup";
+  data: { trigger: "cron" | "manual" };
+}
+
+export interface TeamFridayWrapupCronEvent {
+  name: "tamtam/team.friday-wrapup";
+  data: { trigger: "cron" | "manual" };
+}
+
+export interface TeamRandomMomentCronEvent {
+  name: "tamtam/team.random-moment";
+  data: {
+    trigger: "cron" | "manual";
+    /** Slot id so we can correlate cron firings with the chosen moment. */
+    slot: "morning" | "midday" | "afternoon" | "manual";
+  };
+}
+
 export type AppInngestEvent =
   | SocialMentionedEvent
   | GrowthMentionedEvent
@@ -282,4 +336,10 @@ export type AppInngestEvent =
   | CooTickEvent
   | ApprovalGrantedEvent
   | ApprovalRejectedEvent
-  | ApprovalEditedEvent;
+  | ApprovalEditedEvent
+  | PostPublishedEvent
+  | LeadResearchedEvent
+  | GeorgesCheckinEvent
+  | TeamStandupCronEvent
+  | TeamFridayWrapupCronEvent
+  | TeamRandomMomentCronEvent;

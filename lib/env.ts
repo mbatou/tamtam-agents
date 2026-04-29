@@ -50,9 +50,18 @@ export const env = {
     return required("SLACK_CHANNEL_COO");
   },
   /**
+   * Optional. The shared inter-agent channel (#tamtam-team).
+   * When unset, the team-life Inngest functions log a skip and exit
+   * cleanly — existing flows keep working.
+   */
+  get SLACK_CHANNEL_TEAM(): string | undefined {
+    return optional("SLACK_CHANNEL_TEAM");
+  },
+  /**
    * Optional. When set, the COO `dm_georges` tool opens a real DM with
    * Georges via `conversations.open`. When unset, escalations fall back
-   * to an `@channel` post in #tamtam-coo.
+   * to an `@channel` post in #tamtam-coo. Also used by the Georges
+   * check-in detector to know which user_id to listen for.
    */
   get SLACK_GEORGES_USER_ID(): string | undefined {
     return optional("SLACK_GEORGES_USER_ID");
