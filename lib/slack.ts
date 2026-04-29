@@ -137,11 +137,32 @@ export async function updateAgentMessage(input: {
 
 const APPROVAL_ACTION_ID = "tamtam_approval_action";
 
+/**
+ * Slack only reliably unfurls inline images hosted on
+ * https://files.slack.com (i.e. files uploaded via files.uploadV2).
+ * External URLs (placehold.co, via.placeholder.com, even pre-signed
+ * Supabase Storage URLs) are routinely rejected by the image
+ * downloader and the whole `image` block fails silently.
+ *
+ * Until DALL-E is restored AND the image is uploaded to Slack first,
+ * skip the image block and surface the prompt as context instead.
+ */
+const SLACK_HOSTED_IMAGE_PREFIX = "https://files.slack.com";
+
+export function isSlackHostedImage(url: string | null | undefined): boolean {
+  return !!url && url.startsWith(SLACK_HOSTED_IMAGE_PREFIX);
+}
+
 export function buildApprovalBlocks(args: {
   approvalId: string;
   headline: string;
   preview: string;
   imageUrl?: string | null;
+  /**
+   * The DALL-E prompt that produced (or would have produced) the image.
+   * Shown as a context block when the image URL is not Slack-hosted.
+   */
+  imagePrompt?: string | null;
 }): ReadonlyArray<unknown> {
   const blocks: unknown[] = [
     {
@@ -154,11 +175,24 @@ export function buildApprovalBlocks(args: {
     },
   ];
 
-  if (args.imageUrl) {
+  if (isSlackHostedImage(args.imageUrl)) {
+    // Real Slack-hosted file: render inline.
     blocks.push({
       type: "image",
       image_url: args.imageUrl,
       alt_text: "Generated post preview",
+    });
+  } else if (args.imagePrompt && args.imagePrompt.trim().length > 0) {
+    // Stub / external URL: don't try to render — show the prompt instead
+    // so Georges sees what the image *would* be.
+    blocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `🎨 *Image prompt:* ${args.imagePrompt}`,
+        },
+      ],
     });
   }
 

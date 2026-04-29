@@ -246,6 +246,7 @@ export function socialTools(ctx: ToolCtx = {}): ToolDefinition[] {
               post_id: post.id,
               caption: i.caption,
               image_url: i.image_url,
+              image_prompt: i.image_prompt,
             } satisfies ApprovalPayloadLinkedinPost,
           });
 
@@ -259,7 +260,12 @@ export function socialTools(ctx: ToolCtx = {}): ToolDefinition[] {
               approvalId: approval.id,
               headline: "🎨 Tamtam Social — Post Approval",
               preview: i.caption,
+              // Image renders inline only when uploaded to Slack first
+              // (https://files.slack.com URL). Until DALL-E is restored
+              // we pass the prompt instead so the block falls back to
+              // a context line.
               imageUrl: i.image_url,
+              imagePrompt: i.image_prompt,
             }),
           });
           await attachSlackTsToApproval(approval.id, slackRes.ts);
