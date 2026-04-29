@@ -327,6 +327,11 @@ export interface TeamRandomMomentCronEvent {
   };
 }
 
+export interface TeamTestReactionsEvent {
+  name: "tamtam/team.test-reactions";
+  data: { trigger: "cron" | "manual" };
+}
+
 export type AppInngestEvent =
   | SocialMentionedEvent
   | GrowthMentionedEvent
@@ -342,4 +347,5 @@ export type AppInngestEvent =
   | GeorgesCheckinEvent
   | TeamStandupCronEvent
   | TeamFridayWrapupCronEvent
-  | TeamRandomMomentCronEvent;
+  | TeamRandomMomentCronEvent
+  | TeamTestReactionsEvent;
