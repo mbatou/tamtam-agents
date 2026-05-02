@@ -13,9 +13,10 @@
  */
 
 import { NextResponse } from "next/server";
-import { env, MissingEnvError, validateEnv } from "@/lib/env";
+import { MissingEnvError, validateEnv } from "@/lib/env";
 import {
   defaultChannelFor,
+  getSigningSecretForApp,
   isApprovalActionId,
   postAsAgent,
   updateAgentMessage,
@@ -38,6 +39,7 @@ export const dynamic = "force-dynamic";
 
 interface SlackBlockActionsPayload {
   type: "block_actions";
+  api_app_id?: string;
   user: { id: string; name?: string };
   actions: Array<{
     action_id: string;
@@ -62,16 +64,11 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const rawBody = await req.text();
-  const ok = verifySlackSignature({
-    signingSecret: env.SLACK_SIGNING_SECRET,
-    rawBody,
-    timestamp: req.headers.get("x-slack-request-timestamp"),
-    signature: req.headers.get("x-slack-signature"),
-  });
-  if (!ok) {
-    return new NextResponse("invalid signature", { status: 401 });
-  }
 
+  // Peek inside the URL-encoded payload to find `api_app_id` so we
+  // can pick the right signing secret. The interactions endpoint
+  // receives traffic from any of the three Slack apps depending on
+  // which one posted the message Georges clicked.
   const params = new URLSearchParams(rawBody);
   const payloadRaw = params.get("payload");
   if (!payloadRaw) {
@@ -83,6 +80,21 @@ export async function POST(req: Request): Promise<Response> {
     payload = JSON.parse(payloadRaw) as SlackBlockActionsPayload;
   } catch {
     return new NextResponse("invalid payload json", { status: 400 });
+  }
+
+  const signingSecret = getSigningSecretForApp(payload.api_app_id);
+  const ok = verifySlackSignature({
+    signingSecret,
+    rawBody,
+    timestamp: req.headers.get("x-slack-request-timestamp"),
+    signature: req.headers.get("x-slack-signature"),
+  });
+  if (!ok) {
+    console.log(
+      "[slack/interactions] signature verification FAILED for app:",
+      payload.api_app_id,
+    );
+    return new NextResponse("invalid signature", { status: 401 });
   }
 
   if (payload.type !== "block_actions") {

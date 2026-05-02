@@ -193,7 +193,7 @@ export function cooTools(_ctx: ToolCtx = {}): ToolDefinition[] {
           let channel: string;
           let text: string;
           if (georgesId) {
-            channel = await openDmChannelFor(georgesId);
+            channel = await openDmChannelFor("coo", georgesId);
             text = i.message;
           } else {
             channel = defaultChannelFor("coo");

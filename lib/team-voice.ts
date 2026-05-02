@@ -13,7 +13,7 @@ import { generateText } from "@/lib/anthropic";
 import { logAgentAction } from "@/lib/supabase";
 import {
   PERSONAS,
-  postAsAgent,
+  respondWithTyping,
   teamChannelOrNull,
 } from "@/lib/slack";
 import { SOCIAL_SYSTEM_PROMPT } from "@/agents/social/system-prompt";
@@ -107,7 +107,7 @@ export async function speakAs(input: SpeakAsInput): Promise<SpeakAsResult> {
     return { posted: false, reason: "skipped" };
   }
 
-  const post = await postAsAgent({
+  const post = await respondWithTyping({
     agent: input.agent,
     channel,
     threadTs: input.threadTs,

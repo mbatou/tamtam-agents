@@ -17,7 +17,8 @@
 import { NextResponse } from "next/server";
 import { checkEnv, env } from "@/lib/env";
 import { pingSupabase } from "@/lib/supabase";
-import { getSlackWeb } from "@/lib/slack";
+import { getClientFor } from "@/lib/slack";
+import type { AgentName } from "@/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,15 +30,18 @@ interface HealthResponse {
   timestamp: string;
   services: {
     supabase: ProbeResult;
-    slack: ProbeResult;
+    /** One probe per Slack app — surfaces token / scope problems per agent. */
+    slack_awa: ProbeResult;
+    slack_kofi: ProbeResult;
+    slack_rama: ProbeResult;
     inngest: ProbeResult;
   };
   env: { ok: true } | { ok: false; missing: string[] };
 }
 
-async function probeSlack(): Promise<ProbeResult> {
+async function probeSlackFor(agent: AgentName): Promise<ProbeResult> {
   try {
-    const res = await getSlackWeb().auth.test();
+    const res = await getClientFor(agent).auth.test();
     if (!res.ok) {
       return { ok: false, error: res.error ?? "auth.test failed" };
     }
@@ -75,15 +79,19 @@ function probeInngest(): ProbeResult {
 export async function GET(): Promise<Response> {
   const envCheck = checkEnv();
 
-  const [supabaseProbe, slackProbe] = await Promise.all([
+  const [supabaseProbe, slackAwa, slackKofi, slackRama] = await Promise.all([
     pingSupabase(),
-    probeSlack(),
+    probeSlackFor("social"),
+    probeSlackFor("growth"),
+    probeSlackFor("coo"),
   ]);
   const inngestProbe = probeInngest();
 
   const allOk =
     supabaseProbe.ok &&
-    slackProbe.ok &&
+    slackAwa.ok &&
+    slackKofi.ok &&
+    slackRama.ok &&
     inngestProbe.ok &&
     envCheck.ok;
 
@@ -92,7 +100,9 @@ export async function GET(): Promise<Response> {
     timestamp: new Date().toISOString(),
     services: {
       supabase: supabaseProbe,
-      slack: slackProbe,
+      slack_awa: slackAwa,
+      slack_kofi: slackKofi,
+      slack_rama: slackRama,
       inngest: inngestProbe,
     },
     env: envCheck,

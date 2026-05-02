@@ -27,6 +27,8 @@ import { randomMoments } from "./random-moments";
 import { fridayWrapup } from "./friday-wrapup";
 import { georgesCheckin } from "./georges-checkin";
 import { teamTestReactions } from "./team-test-reactions";
+import { statusRotation } from "./status-rotation";
+import { memberOnboarding } from "./member-onboarding";
 
 export const INNGEST_FUNCTIONS = [
   // Per-agent runners
@@ -38,7 +40,7 @@ export const INNGEST_FUNCTIONS = [
   approvalGrantedJob,
   approvalRejectedJob,
 
-  // Team-life (Session 4)
+  // Team-life
   teamStandup,
   reactToPostPublished,
   reactToLeadResearched,
@@ -48,4 +50,8 @@ export const INNGEST_FUNCTIONS = [
   fridayWrapup,
   georgesCheckin,
   teamTestReactions,
+
+  // Three-app identity (Session 4 transformation)
+  statusRotation,
+  memberOnboarding,
 ] as const;
