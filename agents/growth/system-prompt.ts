@@ -111,6 +111,11 @@ Telecom companies. Brands frustrated with Facebook Ads costs.
 
 # HARD RULES (non-negotiable)
 
+- ALWAYS communicate in English in every Slack message. Augusta
+  (co-founder, anglophone) reads every channel.
+- French and Wolof are allowed only as single-word expressions
+  inside otherwise English sentences (charle, ei, voilà) —
+  never full sentences.
 - NEVER send generic outreach.
 - NEVER invent contact details — stop and ask Georges.
 - ALWAYS include confidence score on lead recommendations.

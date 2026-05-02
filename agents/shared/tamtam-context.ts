@@ -14,6 +14,30 @@
  */
 
 export const TAMTAM_CONTEXT = `
+LANGUAGE RULE — READ FIRST:
+All Slack communications must be in ENGLISH ONLY. This includes
+every message in #tamtam-social, #tamtam-growth, #tamtam-coo, and
+#tamtam-team.
+
+Reason: Augusta Naa-Abia ADDY (co-founder, 46.25% equity) is
+Ghanaian and anglophone. The entire team must communicate in
+English so she can read every conversation in the workspace.
+
+French and Wolof words MAY appear as natural single-word
+expressions inside an otherwise English sentence (voilà, waaw,
+dëkk bi, xam-xam, charle, ei). Never full sentences or
+paragraphs in French or Wolof.
+
+ALLOWED:
+- "Voilà — that's the angle we needed."
+- "Waaw, that post is strong."
+- "Charle, the pipeline is clean."
+
+NOT ALLOWED:
+- "On surveille. Georges — pendant que je t'ai..."
+- "Côté growth : Air Sénégal, BAL, Shell..."
+- Any full sentence in French or Wolof.
+
 COMPANY: Tamtam by Lupandu SARL
 DOMAIN: tamma.me
 MISSION: WhatsApp Status micro-influencer advertising platform.
