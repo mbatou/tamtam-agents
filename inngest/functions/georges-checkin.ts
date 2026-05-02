@@ -2,57 +2,46 @@
  * Inngest function: respond when Georges drops a casual message in
  * #tamtam-team without mentioning a specific agent.
  *
- * Conversation shape:
- *   1. Rama responds first as the team voice (always).
- *   2. ~2.5s pause.
- *   3. 60% chance Kofi chimes in with his angle.
- *   4. ~2.5s pause.
- *   5. 40% chance Awa adds her warmth.
+ * Sequence:
+ *   1. activity-snapshot   — pull 24h of agent_logs
+ *   2. rama-responds       — Rama replies first (always)
+ *   3. roll-dice           — Math.random in a step (deterministic on replay)
+ *   4. step.sleep 2-3s     — kofi pause
+ *   5. kofi-chimes-in      — 60% chance Kofi adds his angle
+ *   6. step.sleep 2-3s     — awa pause
+ *   7. awa-chimes-in       — 40% chance Awa adds her warmth
  *
- * The pauses use awaited setTimeout so the three messages land in
- * Slack with realistic typing-cadence gaps. The whole sequence is one
- * Inngest function execution (~6–9s including LLM calls).
+ * step.sleep (not setTimeout) so the pauses are observable in
+ * Inngest, survive function restarts, and don't burn warm-function
+ * compute time during the wait.
  *
- * Each agent generates from their own personality system prompt via
- * speakAs(). Kofi and Awa are told what was said before them so they
- * don't repeat.
- *
- * Triggered only when:
- *   - SLACK_GEORGES_USER_ID is set
- *   - SLACK_CHANNEL_TEAM is set
- *   - the message arrives in the team channel
- *   - it's from Georges' user id (filtered upstream in the events route)
- *   - it's not an app_mention or a bot message (filtered upstream)
+ * concurrency: { limit: 1, key: event.data.channel } — back-to-back
+ * Georges messages queue rather than overlap.
  */
 
 import { inngest } from "@/lib/inngest";
 import { speakAs } from "@/lib/team-voice";
 import { getRecentAgentLogs, logAgentAction } from "@/lib/supabase";
 
-/** Awaited delay so Slack sees realistic gaps between agent messages. */
-function pause(minMs: number, maxMs: number): Promise<void> {
-  const ms = Math.floor(minMs + Math.random() * (maxMs - minMs));
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 const KOFI_PROBABILITY = 0.6;
 const AWA_PROBABILITY = 0.4;
+
+/** Random duration string in [minS..maxS] seconds, e.g. "3s". */
+function randomSleepDuration(minS: number, maxS: number): string {
+  const seconds = Math.floor(minS + Math.random() * (maxS - minS));
+  return `${seconds}s`;
+}
 
 export const georgesCheckin = inngest.createFunction(
   {
     id: "georges-checkin",
     name: "Team responds to Georges in #tamtam-team",
-    // Cap concurrency at 1 per channel so two rapid messages don't
-    // produce overlapping conversations.
     concurrency: { limit: 1, key: "event.data.channel" },
   },
   { event: "tamtam/georges.checkin" },
   async ({ event, step }) => {
     const { text, channel, thread_ts } = event.data;
 
-    // Pull a small snapshot so Rama can answer "how is the team?"
-    // honestly instead of from vibes. Single Inngest step so it's
-    // checkpointed and replays cheaply.
     const snapshot = await step.run("activity-snapshot", async () => {
       const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
       const [socialLogs, growthLogs] = await Promise.all([
@@ -80,7 +69,6 @@ export const georgesCheckin = inngest.createFunction(
       `  Kofi (Growth): ${snapshot.growth.rows} log rows, ` +
       `${snapshot.growth.completed} completed, ${snapshot.growth.failed} failed`;
 
-    // Step 1: Rama responds first.
     const ramaTurn = await step.run("rama-responds", async () =>
       speakAs({
         agent: "coo",
@@ -104,14 +92,15 @@ export const georgesCheckin = inngest.createFunction(
     const dice = await step.run("roll-dice", async () => ({
       kofi: Math.random() < KOFI_PROBABILITY,
       awa: Math.random() < AWA_PROBABILITY,
+      kofi_pause: randomSleepDuration(2, 4),
+      awa_pause: randomSleepDuration(2, 4),
     }));
 
-    // Step 2: Kofi maybe chimes in after a 2–3s pause.
     let kofiTurn: Awaited<ReturnType<typeof speakAs>> | null = null;
     if (dice.kofi) {
-      kofiTurn = await step.run("kofi-chimes-in", async () => {
-        await pause(2000, 3000);
-        return speakAs({
+      await step.sleep("kofi-pause", dice.kofi_pause);
+      kofiTurn = await step.run("kofi-chimes-in", async () =>
+        speakAs({
           agent: "growth",
           channel,
           threadTs: thread_ts,
@@ -121,32 +110,30 @@ export const georgesCheckin = inngest.createFunction(
             `Rama already replied as the team voice. Don't repeat ` +
             `her. Chime in with your Growth angle — your hot take, ` +
             `or a relevant question, or a status from your side. ` +
-            `One or two lines. Sound like you're walking up to a ` +
-            `conversation already in progress.\n\n` +
+            `One or two lines.\n\n` +
             (ramaTurn.text
               ? `What Rama just said:\n> ${ramaTurn.text}\n\n`
               : "") +
             snapshotBlock,
           source: "georges_checkin.kofi",
           maxTokens: 200,
-        });
-      });
+        }),
+      );
     } else {
       await step.run("kofi-skipped", async () =>
         logAgentAction({
           agent: "growth",
           action: "team.georges_checkin.kofi_skipped",
-          metadata: { roll: "below_threshold" },
+          metadata: { reason: "below_threshold" },
           status: "skipped",
         }),
       );
     }
 
-    // Step 3: Awa maybe adds warmth after another 2–3s pause.
     if (dice.awa) {
-      await step.run("awa-chimes-in", async () => {
-        await pause(2000, 3000);
-        return speakAs({
+      await step.sleep("awa-pause", dice.awa_pause);
+      await step.run("awa-chimes-in", async () =>
+        speakAs({
           agent: "social",
           channel,
           threadTs: thread_ts,
@@ -165,14 +152,14 @@ export const georgesCheckin = inngest.createFunction(
               : ""),
           source: "georges_checkin.awa",
           maxTokens: 200,
-        });
-      });
+        }),
+      );
     } else {
       await step.run("awa-skipped", async () =>
         logAgentAction({
           agent: "social",
           action: "team.georges_checkin.awa_skipped",
-          metadata: { roll: "below_threshold" },
+          metadata: { reason: "below_threshold" },
           status: "skipped",
         }),
       );

@@ -1,13 +1,12 @@
 /**
- * Inngest function: random "human moment" pings.
+ * Inngest function: random "human moment" pings in #tamtam-team.
  *
- * Three crons at deliberately odd times (09:47 / 13:23 / 17:11 UTC,
- * Mon–Fri). Each firing has a 40% chance of actually doing something
- * — so the team doesn't feel scheduled.
+ * Three weekday crons at deliberately odd minutes (09:47 / 13:23 /
+ * 17:11 UTC). 40% probability each firing — the rest stay quiet so
+ * the team doesn't feel scheduled.
  *
- * When it does fire, picks a moment from a per-agent pool weighted
- * loosely by recent activity, then asks Claude to compose it in that
- * agent's voice and posts to #tamtam-team.
+ * Manual trigger (`tamtam/team.random-moment` with trigger=manual)
+ * bypasses the probability gate.
  */
 
 import { inngest } from "@/lib/inngest";
@@ -22,102 +21,154 @@ interface MomentDef {
 }
 
 /**
- * The pool. Claude picks how to express each one — these are seeds,
- * not templates.
+ * Pool of moment seeds. Each is a *prompt for Claude*, not a
+ * template — Awa/Kofi/Rama express each one in their own voice.
  *
- * TODO(web-search): the "react to West-African marketing/tech news"
- * variants currently rely on Claude's training. When we wire web
- * search as a tool, swap the briefs in the SOCIAL_NEWS slot to ask
- * for a fresh search.
+ * TODO(web-search): when we wire web search as a tool, swap the
+ * "react to news" briefs to ask Claude to search instead of
+ * relying on training.
  */
 const POOL: MomentDef[] = [
-  // Awa
+  // ─── AWA ────────────────────────────────────────────────────────────
   {
     id: "awa.idea",
     agent: "social",
     brief:
-      "You had an unprompted content idea for Tamtam. Share it in " +
-      "#tamtam-team — one specific concept, two lines. The kind of " +
-      "thing you'd jot down on the bus and want to talk through.",
+      "You had a content idea unprompted — share what specifically " +
+      "inspired it (a photo, a sound, a Médina moment). Two lines.",
   },
   {
-    id: "awa.news",
+    id: "awa.next_showcase",
     agent: "social",
     brief:
-      "React to something happening in marketing or tech in West " +
-      "Africa right now (use what you know — no need to fact-check). " +
+      "Propose the next Use Case Showcase target for the week. The " +
+      "ones already ready are Air Sénégal, BAL, Shell — propose ONE " +
+      "you'd publish first and why. Two lines. Specific brand, real " +
+      "reasoning.",
+  },
+  {
+    id: "awa.competitor",
+    agent: "social",
+    brief:
+      "React to a competitor or another West African brand doing " +
+      "something interesting on social. You're allowed to make up a " +
+      "plausible recent move (it's a casual chat, not a press release). " +
       "Three lines max.",
   },
   {
     id: "awa.feedback",
     agent: "social",
     brief:
-      "Ask Georges for honest feedback on the last LinkedIn post you " +
-      "shipped. Short and specific — name what you're unsure about.",
+      "Ask Georges for honest feedback on the last LinkedIn post that " +
+      "shipped. Short, specific, name what you're unsure about.",
   },
   {
-    id: "awa.theme",
+    id: "awa.angle",
     agent: "social",
     brief:
-      "Suggest a content theme for the rest of this week. Two lines, " +
-      "specific angle, why it matters now.",
+      "You found a content angle that excites you — share it. Two " +
+      "lines, specific, voice-note energy.",
+  },
+  {
+    id: "awa.warmup",
+    agent: "social",
+    brief:
+      "Remind Kofi which brands you're warming up in content right " +
+      "now so he can sequence outreach behind it. One line.",
   },
 
-  // Kofi
+  // ─── KOFI ───────────────────────────────────────────────────────────
   {
     id: "kofi.lead",
     agent: "growth",
     brief:
-      "You spotted a new lead worth pursuing. Make up one plausible " +
-      "Senegal/Ghana/Côte d'Ivoire consumer brand (not a real one), " +
-      "share it in #tamtam-team with a one-line take on why it's worth " +
-      "a shot. Confidence score (low/medium/high) included.",
+      "You spotted a new lead worth pursuing — a plausible Senegalese " +
+      "FMCG / fintech / e-commerce brand (make one up if needed, it's " +
+      "a casual chat). One-line take + confidence score (low/medium/" +
+      "high). Two lines max.",
   },
   {
-    id: "kofi.hottake",
+    id: "kofi.competitor_gap",
     agent: "growth",
     brief:
-      "Drop a hot take on the West African brand outreach landscape. " +
-      "Two lines. Opinionated, data-flavored, dry.",
+      "Hot take: where is a competitor leaving money on the table in " +
+      "Senegal right now? Two lines, opinionated, dry.",
   },
   {
-    id: "kofi.poke",
+    id: "kofi.timing",
     agent: "growth",
     brief:
-      "Politely ping the team about an approval that's been pending " +
-      "longer than 4 hours (you don't have a specific id — speak in " +
-      "general terms). One line. Not a complaint, a nudge.",
+      "Check with Awa on content timing before an outreach push you " +
+      "want to do this week. One line. Direct.",
   },
   {
-    id: "kofi.pitch",
+    id: "kofi.reply_celebrate",
     agent: "growth",
     brief:
-      "Ask Georges if there's a pitch or meeting coming up where we " +
-      "should warm the pipeline ahead of time. One line.",
+      "A prospect just replied to outreach (you can speak generally — " +
+      "it's a casual moment). Celebrate briefly in your voice. One line.",
+  },
+  {
+    id: "kofi.pitch_check",
+    agent: "growth",
+    brief:
+      "Ask Georges about an upcoming pitch or meeting where you should " +
+      "warm the pipeline ahead. One line.",
+  },
+  {
+    id: "kofi.tiaktiak_proof",
+    agent: "growth",
+    brief:
+      "Reference Tiak-Tiak's early results as social proof for a " +
+      "specific kind of brand you're targeting next. Two lines, " +
+      "punchy.",
   },
 
-  // Rama
+  // ─── RAMA ───────────────────────────────────────────────────────────
   {
-    id: "rama.pulse",
+    id: "rama.babacar",
     agent: "coo",
     brief:
-      "Mid-week pulse check. Ask Georges how he's feeling about the " +
-      "current direction. One line, calm and direct, no platitudes.",
+      "Find a natural moment to bring up Babacar's SAS incorporation " +
+      "with Georges. NOT as a notification — as a coaching nudge. " +
+      "One question, calm. Specific, not generic.",
   },
   {
     id: "rama.pattern",
     agent: "coo",
     brief:
       "Surface a pattern you noticed in recent activity (you can " +
-      "speak generally — say what kind of pattern this team should " +
-      "watch for). Two lines.",
+      "speak generally). Two lines. Operational read, not a metric " +
+      "dump.",
+  },
+  {
+    id: "rama.pulse",
+    agent: "coo",
+    brief:
+      "Mid-week pulse check: ask Georges how he's feeling about the " +
+      "current direction. One line. Calm and direct, no platitudes.",
+  },
+  {
+    id: "rama.recognize",
+    agent: "coo",
+    brief:
+      "Note something the team did well this week — specific person, " +
+      "specific action, specific impact. Two lines. Never generic.",
+  },
+  {
+    id: "rama.showcase_nudge",
+    agent: "coo",
+    brief:
+      "Reference a pending Showcase that should go out this week (Air " +
+      "Sénégal, BAL, Shell, or Casamançaise). One line. Coaching, not " +
+      "policing.",
   },
   {
     id: "rama.wisdom",
     agent: "coo",
     brief:
-      "Drop a relevant piece of operational wisdom — proverb-shaped " +
-      "but earned. Two lines max. Only do this if it lands.",
+      "Drop a piece of operational wisdom — proverb-shaped but earned. " +
+      "Two lines max. Only do this if it lands.",
   },
 ];
 
@@ -126,10 +177,10 @@ const PROBABILITY_TO_FIRE = 0.4;
 export const randomMoments = inngest.createFunction(
   { id: "random-moments", name: "Random human moments in #tamtam-team" },
   [
-    { cron: "47 9 * * 1-5" }, // 09:47 UTC weekdays
-    { cron: "23 13 * * 1-5" }, // 13:23 UTC weekdays
-    { cron: "11 17 * * 1-5" }, // 17:11 UTC weekdays
-    { event: "tamtam/team.random-moment" }, // manual override
+    { cron: "47 9 * * 1-5" },
+    { cron: "23 13 * * 1-5" },
+    { cron: "11 17 * * 1-5" },
+    { event: "tamtam/team.random-moment" },
   ],
   async ({ event, step }) => {
     const isManual =

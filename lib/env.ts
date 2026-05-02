@@ -33,12 +33,34 @@ function optional(name: string): string | undefined {
  * marketing landing page) without exploding.
  */
 export const env = {
-  // ─── Slack ──────────────────────────────────────────────────────────
-  get SLACK_BOT_TOKEN(): string {
-    return required("SLACK_BOT_TOKEN");
+  // ─── Slack — three apps, one per agent ──────────────────────────────
+  // Each agent IS their own Slack identity. No more chat.write.customize.
+  get SLACK_BOT_TOKEN_AWA(): string {
+    return required("SLACK_BOT_TOKEN_AWA");
   },
-  get SLACK_SIGNING_SECRET(): string {
-    return required("SLACK_SIGNING_SECRET");
+  get SLACK_BOT_TOKEN_KOFI(): string {
+    return required("SLACK_BOT_TOKEN_KOFI");
+  },
+  get SLACK_BOT_TOKEN_RAMA(): string {
+    return required("SLACK_BOT_TOKEN_RAMA");
+  },
+  get SLACK_SIGNING_SECRET_AWA(): string {
+    return required("SLACK_SIGNING_SECRET_AWA");
+  },
+  get SLACK_SIGNING_SECRET_KOFI(): string {
+    return required("SLACK_SIGNING_SECRET_KOFI");
+  },
+  get SLACK_SIGNING_SECRET_RAMA(): string {
+    return required("SLACK_SIGNING_SECRET_RAMA");
+  },
+  get SLACK_APP_ID_AWA(): string {
+    return required("SLACK_APP_ID_AWA");
+  },
+  get SLACK_APP_ID_KOFI(): string {
+    return required("SLACK_APP_ID_KOFI");
+  },
+  get SLACK_APP_ID_RAMA(): string {
+    return required("SLACK_APP_ID_RAMA");
   },
   get SLACK_CHANNEL_SOCIAL(): string {
     return required("SLACK_CHANNEL_SOCIAL");
@@ -58,10 +80,9 @@ export const env = {
     return optional("SLACK_CHANNEL_TEAM");
   },
   /**
-   * Optional. When set, the COO `dm_georges` tool opens a real DM with
-   * Georges via `conversations.open`. When unset, escalations fall back
-   * to an `@channel` post in #tamtam-coo. Also used by the Georges
-   * check-in detector to know which user_id to listen for.
+   * Optional. Used for: Rama's `dm_georges` tool (open real DM via
+   * conversations.open), and the Georges check-in detector (filter
+   * which user_id to listen for in #tamtam-team).
    */
   get SLACK_GEORGES_USER_ID(): string | undefined {
     return optional("SLACK_GEORGES_USER_ID");
@@ -146,8 +167,16 @@ export const env = {
  * Vercel deployment configuration and we want it readable without TS.
  */
 const REQUIRED_ENV_VARS = [
-  "SLACK_BOT_TOKEN",
-  "SLACK_SIGNING_SECRET",
+  // Three Slack apps — one per agent identity
+  "SLACK_BOT_TOKEN_AWA",
+  "SLACK_BOT_TOKEN_KOFI",
+  "SLACK_BOT_TOKEN_RAMA",
+  "SLACK_SIGNING_SECRET_AWA",
+  "SLACK_SIGNING_SECRET_KOFI",
+  "SLACK_SIGNING_SECRET_RAMA",
+  "SLACK_APP_ID_AWA",
+  "SLACK_APP_ID_KOFI",
+  "SLACK_APP_ID_RAMA",
   "SLACK_CHANNEL_SOCIAL",
   "SLACK_CHANNEL_GROWTH",
   "SLACK_CHANNEL_COO",

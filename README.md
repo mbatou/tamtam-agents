@@ -7,17 +7,43 @@ marketing platform based in Dakar, Senegal, owned by **Lupandu SARL**.
 
 ## The team
 
-- **Awa** — `@tamtam-social` — creative voice; generates and publishes LinkedIn content
-- **Kofi** — `@tamtam-growth` — sharp prospector; researches leads and runs outreach
-- **Rama** — `@tamtam-coo` — calm operator; orchestrates, monitors, reports
+- **Awa Diallo** — Social Media Lead, posts as her own Slack identity in `#tamtam-social`
+- **Kofi Mensah** — Growth & Sales Lead, posts as his own Slack identity in `#tamtam-growth`
+- **Rama Sall** — COO, posts as her own Slack identity in `#tamtam-coo`
 
-All three operate as Slack teammates inside the **Lupandu SAS** workspace.
-The only human in the loop is **Georges**, who approves consequential actions.
+Each agent is a **separate Slack app** with its own bot token, signing
+secret, app id, and Slack user. There are no `chat.write.customize`
+persona overrides anywhere — when Awa speaks it is literally Awa's
+app posting through Awa's token.
 
-The team also lives together in **#tamtam-team** — morning standups
-from Rama, inter-agent reactions when a post ships or a lead lands,
-random "human moments" sprinkled through the week, and a Friday
-wrap-up. Georges can drop in, say hello, and get a real response.
+The only human in the loop is **Georges DIEME** (founder, CTO), who
+approves consequential actions. The team also lives together in
+**#tamtam-team** — morning standups from Rama, inter-agent reactions
+when a post ships or a lead lands, random "human moments" sprinkled
+through the week, a Friday wrap-up, and onboarding messages when
+someone new joins. Georges can drop in, say hello, get a real
+response.
+
+### Human-behavior layer
+
+`lib/human-behavior.ts` gives each agent a working schedule (WAT):
+
+| Agent | Hours | Workdays | Lunch | Late-night reply |
+|---|---|---|---|---|
+| Awa   | 09:00–18:00 | Mon–Fri | 13–14 | never |
+| Kofi  | 08:00–19:00 | Mon–Sat | 13–14 | 15% chance |
+| Rama  | 07:00–19:00 | Mon–Fri | 13–14 | never |
+
+Outside hours, the agent posts a human auto-reply ("I'll pick this
+up in the morning charle") and stops. Within hours, a 2–15-minute
+"thinking" delay (`step.sleep`) runs before the reply lands.
+
+A status-rotation cron updates each agent's Slack profile status
+every 30 minutes on weekdays — `🎨 Creating content`, `🍽️ Back at
+2pm`, `✅ Done for today`, etc.
+
+Cron-driven jobs (Rama's standup, daily brief, Friday wrap-up)
+bypass the gate — Rama sets her own schedule.
 
 ## Stack
 
@@ -34,14 +60,24 @@ OpenAI DALL-E 3 · Resend · React Email · Tailwind · Vercel
 ### From Slack (the normal path)
 
 ```text
-@tamtam-social create a LinkedIn post about <topic>
-@tamtam-growth  research <company> and draft outreach
-@tamtam-coo     what is the team status right now
+@Awa create a LinkedIn post about <topic>          (in #tamtam-social)
+@Kofi research <company> and draft outreach         (in #tamtam-growth)
+@Rama what is the team status right now             (in #tamtam-coo)
 ```
 
-The bot must be invited to `#tamtam-social`, `#tamtam-growth`, and
-`#tamtam-coo`. Approval messages land in the agent's own channel; the
-COO daily brief lands in `#tamtam-coo`.
+Each agent must be invited to their channel + `#tamtam-team`.
+Routing is by channel id, not by mention text — typing `@Awa` in
+`#tamtam-coo` will not route to Awa.
+
+In `#tamtam-team`, Georges can also use ops commands (anyone in the
+channel can, but it's mostly for him):
+
+```text
+trigger standup     → Rama posts the morning standup right now
+trigger wrapup      → Rama posts the Friday retro right now
+trigger moment      → A random agent fires a human moment
+trigger reactions   → Smoke-test all 4 inter-agent reactions
+```
 
 ### Manually via HTTPS
 
@@ -114,21 +150,56 @@ Webhook URLs (paste *after* the first deploy gives you a stable URL):
 - Slack → Interactivity & Shortcuts → Request URL: `https://<vercel-url>/api/slack/interactions`
 - Inngest → Apps → Sync app → URL: `https://<vercel-url>/api/inngest`
 
-### Slack subscriptions for #tamtam-team
+### Slack apps — required scopes & event subscriptions
 
-For the Georges check-in detector to receive plain messages (not just
-`@`-mentions), the Slack app must be subscribed to additional events:
+We run **three** Slack apps (Awa / Kofi / Rama). Each one needs
+identical configuration:
 
-- Slack app → **Event Subscriptions** → **Subscribe to bot events**
-  → add `message.channels`
-- Slack app → **OAuth & Permissions** → bot scopes → ensure
-  `channels:history` is present (it usually is for `app_mention` apps,
-  but double-check after adding `message.channels`)
-- Reinstall the app to the workspace if Slack prompts for it
-- Invite the bot to `#tamtam-team` (`/invite @<bot-name>`)
+**Bot scopes** (`OAuth & Permissions → Bot Token Scopes`):
 
-Without these the detector silently no-ops — `@`-mentions and existing
-flows keep working.
+```
+chat:write
+chat:write.public
+app_mentions:read
+channels:history
+im:write
+im:history
+users.profile:write    ← needed for status rotation + avatar script
+users:read
+```
+
+**Event subscriptions** (`Event Subscriptions → Subscribe to bot
+events`):
+
+```
+app_mention
+message.channels
+member_joined_channel
+```
+
+**Request URLs** (same on all three apps — multi-app signature
+verification picks the right secret per request):
+
+- Event Subscriptions Request URL: `https://<vercel-url>/api/slack/events`
+- Interactivity & Shortcuts Request URL: `https://<vercel-url>/api/slack/interactions`
+
+Reinstall each app to the workspace after scope or event changes.
+Invite each agent's user to all four channels (`#tamtam-social`,
+`#tamtam-growth`, `#tamtam-coo`, `#tamtam-team`).
+
+### Avatar setup
+
+Run once after the apps are installed and tokens are on disk:
+
+```bash
+vercel env pull .env.local --yes
+npm run set-avatars
+rm .env.local
+```
+
+Sets each agent's profile photo to a colored initials avatar
+(Awa = orange #D35400, Kofi = green #2D6A4F, Rama = slate #4A4E69).
+Re-runnable — Slack overwrites the existing photo.
 
 ### Local development (when you actually need it)
 

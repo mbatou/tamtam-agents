@@ -332,6 +332,20 @@ export interface TeamTestReactionsEvent {
   data: { trigger: "cron" | "manual" };
 }
 
+export interface TeamMemberJoinedEvent {
+  name: "tamtam/team.member-joined";
+  data: {
+    user_id: string;
+    channel: string;
+    event_ts: string;
+  };
+}
+
+export interface StatusRotationEvent {
+  name: "tamtam/status.rotate";
+  data: { trigger: "cron" | "manual" };
+}
+
 export type AppInngestEvent =
   | SocialMentionedEvent
   | GrowthMentionedEvent
@@ -348,4 +362,6 @@ export type AppInngestEvent =
   | TeamStandupCronEvent
   | TeamFridayWrapupCronEvent
   | TeamRandomMomentCronEvent
-  | TeamTestReactionsEvent;
+  | TeamTestReactionsEvent
+  | TeamMemberJoinedEvent
+  | StatusRotationEvent;
