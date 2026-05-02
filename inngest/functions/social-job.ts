@@ -6,23 +6,22 @@
  *   - tamtam/social.run          — manual trigger from /api/agents/social
  *
  * Behaviour:
- *   1. Working-hours gate. Outside hours → post a human OOO line and
- *      stop. (Cron-driven runs bypass — the cron sets its own timing.)
- *   2. Response delay. step.sleep for getResponseDelay("social") so the
- *      reply doesn't land instantly.
- *   3. Run the agent, log, return.
+ *   1. Human "thinking" delay (2–15 min via step.sleep) so the
+ *      reply doesn't land instantly. Mention/manual triggers only;
+ *      cron triggers bypass since cron is already its own schedule.
+ *   2. Run the agent.
+ *
+ * (Working-hours gate removed in the Session 5 pruning — Augusta's
+ * anglophone team works across timezones and the gate produced
+ * confusing OOO replies during normal conversation hours.)
  */
 
 import { inngest } from "@/lib/inngest";
 import { runSocialAgent } from "@/agents/social";
-import { respondWithTyping } from "@/lib/slack";
 import {
   delayToInngest,
-  getOutOfHoursMessage,
   getResponseDelay,
-  isWithinWorkingHours,
 } from "@/lib/human-behavior";
-import { logAgentAction } from "@/lib/supabase";
 
 export const socialJob = inngest.createFunction(
   { id: "social-job", name: "Awa — Social Agent run" },
@@ -48,44 +47,10 @@ export const socialJob = inngest.createFunction(
         })
       : null;
 
-    // Cron-triggered runs bypass the working-hours gate (Awa's cron
-    // schedule is the schedule). Mentions and manual triggers gate.
     const triggerSource: "manual" | "cron" | "approval" = runData?.trigger ?? "manual";
-    const shouldGate = triggerSource !== "cron";
+    const shouldDelay = triggerSource !== "cron";
 
-    if (shouldGate && !isWithinWorkingHours("social")) {
-      // Out-of-hours: post a human auto-reply and stop. Only when we
-      // know which channel to post in (mention path always provides it).
-      if (mentionData) {
-        await step.run("ooo-reply", async () => {
-          await respondWithTyping({
-            agent: "social",
-            channel: mentionData.channel,
-            threadTs: mentionData.thread_ts,
-            text: getOutOfHoursMessage("social"),
-          });
-          await logAgentAction({
-            agent: "social",
-            action: "run.skipped.out_of_hours",
-            metadata: { channel: mentionData.channel, user: mentionData.user },
-            status: "skipped",
-          });
-        });
-      } else {
-        await step.run("log-ooo-skip", async () =>
-          logAgentAction({
-            agent: "social",
-            action: "run.skipped.out_of_hours",
-            metadata: { trigger: triggerSource },
-            status: "skipped",
-          }),
-        );
-      }
-      return { skipped: "outside_working_hours" };
-    }
-
-    // Human "thinking" delay before the actual reply.
-    if (shouldGate) {
+    if (shouldDelay) {
       const delayMs = getResponseDelay("social");
       await step.sleep("human-delay", delayToInngest(delayMs));
     }

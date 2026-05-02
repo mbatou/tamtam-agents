@@ -3,30 +3,27 @@
  * #tamtam-team without mentioning a specific agent.
  *
  * Sequence:
- *   1. activity-snapshot   — pull 24h of agent_logs
- *   2. rama-responds       — Rama replies first (always)
- *   3. roll-dice           — Math.random in a step (deterministic on replay)
- *   4. step.sleep 2-3s     — kofi pause
- *   5. kofi-chimes-in      — 60% chance Kofi adds his angle
- *   6. step.sleep 2-3s     — awa pause
- *   7. awa-chimes-in       — 40% chance Awa adds her warmth
+ *   1. activity-snapshot      — pull 24h of agent_logs
+ *   2. rama-responds          — Rama replies in 2–3 sentences max
+ *   3. step.sleep 3–5s        — Kofi pause
+ *   4. kofi-chimes-in         — Claude decides SKIP or chime; in chime,
+ *                               directly references Rama by name
+ *   5. step.sleep 3–5s        — Awa pause
+ *   6. awa-chimes-in          — Claude decides SKIP or chime; if chime,
+ *                               references Rama and/or Kofi
  *
- * step.sleep (not setTimeout) so the pauses are observable in
- * Inngest, survive function restarts, and don't burn warm-function
- * compute time during the wait.
- *
- * concurrency: { limit: 1, key: event.data.channel } — back-to-back
- * Georges messages queue rather than overlap.
+ * Idempotency:
+ *   - Inngest event id `georges-checkin-${slack_event_id}` (set by
+ *     /api/slack/events) → Inngest's native dedup collapses retries.
+ *   - concurrency.key on event.data.slack_event_id → defensive
+ *     in-flight collision guard inside Inngest.
  */
 
 import { inngest } from "@/lib/inngest";
 import { speakAs } from "@/lib/team-voice";
-import { getRecentAgentLogs, logAgentAction } from "@/lib/supabase";
+import { getRecentAgentLogs } from "@/lib/supabase";
 
-const KOFI_PROBABILITY = 0.6;
-const AWA_PROBABILITY = 0.4;
-
-/** Random duration string in [minS..maxS] seconds, e.g. "3s". */
+/** Random duration string in [minS..maxS] seconds, e.g. "4s". */
 function randomSleepDuration(minS: number, maxS: number): string {
   const seconds = Math.floor(minS + Math.random() * (maxS - minS));
   return `${seconds}s`;
@@ -36,7 +33,12 @@ export const georgesCheckin = inngest.createFunction(
   {
     id: "georges-checkin",
     name: "Team responds to Georges in #tamtam-team",
-    concurrency: { limit: 1, key: "event.data.channel" },
+    // Defensive in-flight guard. The /api/slack/events route sets an
+    // Inngest event id of `georges-checkin-${slack_event_id}` which
+    // does the heavy lifting; this concurrency key adds a second
+    // layer for the case where two distinct events somehow share an
+    // event_id at the function-trigger boundary.
+    concurrency: { limit: 1, key: "event.data.slack_event_id" },
   },
   { event: "tamtam/georges.checkin" },
   async ({ event, step }) => {
@@ -69,106 +71,89 @@ export const georgesCheckin = inngest.createFunction(
       `  Kofi (Growth): ${snapshot.growth.rows} log rows, ` +
       `${snapshot.growth.completed} completed, ${snapshot.growth.failed} failed`;
 
+    // Rama: tight, warm, no full reports. 2–3 sentences MAX.
     const ramaTurn = await step.run("rama-responds", async () =>
       speakAs({
         agent: "coo",
         channel,
         threadTs: thread_ts,
         brief:
-          `Georges just walked into #tamtam-team and said:\n` +
+          `Georges sent a casual check-in message in #tamtam-team:\n` +
           `> ${text}\n\n` +
-          `Respond as the team voice (you, Rama). Welcoming if it's ` +
-          `a hello. Honest and grounded if it's a question — use the ` +
-          `snapshot below, don't make things up. If he shared news, ` +
-          `acknowledge it warmly. Three lines max. No quoting his ` +
-          `message back at him.\n\n` +
+          `Respond as Rama in 2–3 SENTENCES MAXIMUM. Be direct and ` +
+          `warm. Pick at most ONE update to give and at most ONE ` +
+          `question to ask — never both at full length. This is a ` +
+          `quick check-in, NOT a brief. No bullet lists. No status ` +
+          `recap. After you reply, Kofi and Awa may add one line ` +
+          `each if they have something specific to say.\n\n` +
           snapshotBlock,
         source: "georges_checkin.rama",
-        maxTokens: 300,
+        maxTokens: 200,
       }),
     );
 
-    // Roll dice ONCE inside a step so replays are deterministic.
-    const dice = await step.run("roll-dice", async () => ({
-      kofi: Math.random() < KOFI_PROBABILITY,
-      awa: Math.random() < AWA_PROBABILITY,
-      kofi_pause: randomSleepDuration(2, 4),
-      awa_pause: randomSleepDuration(2, 4),
-    }));
+    // 3–5s pause before Kofi might chime in.
+    await step.sleep("kofi-pause", randomSleepDuration(3, 6));
 
-    let kofiTurn: Awaited<ReturnType<typeof speakAs>> | null = null;
-    if (dice.kofi) {
-      await step.sleep("kofi-pause", dice.kofi_pause);
-      kofiTurn = await step.run("kofi-chimes-in", async () =>
-        speakAs({
-          agent: "growth",
-          channel,
-          threadTs: thread_ts,
-          brief:
-            `Georges just said in #tamtam-team:\n` +
-            `> ${text}\n\n` +
-            `Rama already replied as the team voice. Don't repeat ` +
-            `her. Chime in with your Growth angle — your hot take, ` +
-            `or a relevant question, or a status from your side. ` +
-            `One or two lines.\n\n` +
-            (ramaTurn.text
-              ? `What Rama just said:\n> ${ramaTurn.text}\n\n`
-              : "") +
-            snapshotBlock,
-          source: "georges_checkin.kofi",
-          maxTokens: 200,
-        }),
-      );
-    } else {
-      await step.run("kofi-skipped", async () =>
-        logAgentAction({
-          agent: "growth",
-          action: "team.georges_checkin.kofi_skipped",
-          metadata: { reason: "below_threshold" },
-          status: "skipped",
-        }),
-      );
-    }
+    // Kofi: contextual SKIP. Claude decides whether to chime — no dice.
+    const kofiTurn = await step.run("kofi-chimes-in", async () =>
+      speakAs({
+        agent: "growth",
+        channel,
+        threadTs: thread_ts,
+        brief:
+          `Georges said:\n> ${text}\n\n` +
+          `Rama just replied:\n> ${ramaTurn.text ?? ""}\n\n` +
+          `Decide as Kofi: do you have something SPECIFIC and ` +
+          `valuable to add here that Rama did not cover? Something ` +
+          `concrete from your side — a lead, a deadline, a Tiak-Tiak ` +
+          `data point, an honest pushback?\n\n` +
+          `If YES — respond in character. ONE line, MAX two. ` +
+          `Reference Rama by name (e.g. "Rama's right —", "to Rama's ` +
+          `point —"). Don't deliver a parallel report. Connect ` +
+          `directly to what was said.\n\n` +
+          `If you have NOTHING genuinely additive — respond with ` +
+          `EXACTLY: SKIP\n\n` +
+          `Do not pad. SKIP is the correct answer when you don't ` +
+          `have something specific.`,
+        source: "georges_checkin.kofi",
+        maxTokens: 200,
+        skipMarker: "SKIP",
+      }),
+    );
 
-    if (dice.awa) {
-      await step.sleep("awa-pause", dice.awa_pause);
-      await step.run("awa-chimes-in", async () =>
-        speakAs({
-          agent: "social",
-          channel,
-          threadTs: thread_ts,
-          brief:
-            `Georges just said in #tamtam-team:\n` +
-            `> ${text}\n\n` +
-            `Rama and ${dice.kofi ? "Kofi" : "the team"} already ` +
-            `responded. Don't repeat them. Add your warmth — your ` +
-            `creative angle, a small reaction, something specific. ` +
-            `One or two lines. Voice-note energy.\n\n` +
-            (ramaTurn.text
-              ? `What Rama said:\n> ${ramaTurn.text}\n\n`
-              : "") +
-            (kofiTurn?.text
-              ? `What Kofi said:\n> ${kofiTurn.text}\n\n`
-              : ""),
-          source: "georges_checkin.awa",
-          maxTokens: 200,
-        }),
-      );
-    } else {
-      await step.run("awa-skipped", async () =>
-        logAgentAction({
-          agent: "social",
-          action: "team.georges_checkin.awa_skipped",
-          metadata: { reason: "below_threshold" },
-          status: "skipped",
-        }),
-      );
-    }
+    await step.sleep("awa-pause", randomSleepDuration(3, 6));
+
+    // Awa: contextual SKIP. Sees Rama AND Kofi (if posted).
+    await step.run("awa-chimes-in", async () =>
+      speakAs({
+        agent: "social",
+        channel,
+        threadTs: thread_ts,
+        brief:
+          `Georges said:\n> ${text}\n\n` +
+          `Rama replied:\n> ${ramaTurn.text ?? ""}\n\n` +
+          (kofiTurn.text
+            ? `Kofi added:\n> ${kofiTurn.text}\n\n`
+            : `Kofi stayed quiet.\n\n`) +
+          `Decide as Awa: do you have something SPECIFIC and ` +
+          `valuable to add — your warmth, a creative angle, a ` +
+          `Showcase reference, a small reaction to what was said?\n\n` +
+          `If YES — respond in character. ONE line, MAX two. ` +
+          `Reference Rama or Kofi by name to keep it a real ` +
+          `conversation (e.g. "to Kofi's point —", "Rama —"). ` +
+          `Voice-note energy. Don't repeat anyone.\n\n` +
+          `If you have NOTHING genuinely additive — respond with ` +
+          `EXACTLY: SKIP`,
+        source: "georges_checkin.awa",
+        maxTokens: 200,
+        skipMarker: "SKIP",
+      }),
+    );
 
     return {
       rama_posted: ramaTurn.posted,
-      kofi_chimed: dice.kofi,
-      awa_chimed: dice.awa,
+      kofi_chimed: kofiTurn.posted,
     };
   },
 );

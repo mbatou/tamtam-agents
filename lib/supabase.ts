@@ -91,6 +91,31 @@ export async function logAgentAction(
   return data as unknown as AgentLog;
 }
 
+/**
+ * Soft de-dup for Slack-driven flows. Returns true if any agent_logs
+ * row already carries `metadata.slack_event_id === eventId`. Pair with
+ * an Inngest event-id-based dedup at send-time for the real safety net
+ * — this query is the fast-path early-out.
+ */
+export async function hasLoggedSlackEvent(eventId: string): Promise<boolean> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("agent_logs")
+    .select("id")
+    .eq("metadata->>slack_event_id", eventId)
+    .limit(1);
+
+  if (error) {
+    // Don't fail a webhook over a dedup-lookup hiccup. The Inngest
+    // event-id dedup (`id: \`georges-checkin-${eventId}\``) is still
+    // in place and will catch the duplicate.
+    console.warn(
+      `[supabase] hasLoggedSlackEvent(${eventId}) failed: ${error.message}`,
+    );
+    return false;
+  }
+  return (data ?? []).length > 0;
+}
+
 export async function getRecentAgentLogs(
   agent: AgentName,
   sinceISO: string,

@@ -305,6 +305,13 @@ export interface GeorgesCheckinEvent {
     user: string;
     event_ts: string;
     thread_ts?: string;
+    /**
+     * Slack's event_id for the originating event. Used as the
+     * concurrency key on the georges-checkin function so two
+     * Slack retries with the same event_id can never produce two
+     * conversations.
+     */
+    slack_event_id: string;
   };
 }
 

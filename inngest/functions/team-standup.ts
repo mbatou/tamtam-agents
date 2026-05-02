@@ -6,20 +6,19 @@
  * Sequence:
  *   1. Pull last 24h of agent_logs
  *   2. Rama posts the standup, referencing actual yesterday activity
- *   3. step.sleep 30s
- *   4. Roll dice — 70% Kofi chimes in with today's plan
- *   5. step.sleep 60s (from Kofi's slot start)
- *   6. Roll dice — 60% Awa adds her focus
+ *   3. step.sleep 30s → Kofi chimes IF he has something to add to
+ *      what Rama said (SKIP otherwise — no dice)
+ *   4. step.sleep 30s → Awa chimes IF she has something to add to
+ *      what Rama or Kofi said (SKIP otherwise)
  *
- * Cron-driven; bypasses the working-hours gate. Rama owns 08:00.
+ * The chime-ins reference the prior speaker by name so the thread
+ * reads like a real morning conversation, not three parallel
+ * monologues.
  */
 
 import { inngest } from "@/lib/inngest";
-import { getRecentAgentLogs, logAgentAction } from "@/lib/supabase";
+import { getRecentAgentLogs } from "@/lib/supabase";
 import { speakAs } from "@/lib/team-voice";
-
-const KOFI_PROBABILITY = 0.7;
-const AWA_PROBABILITY = 0.6;
 
 export const teamStandup = inngest.createFunction(
   { id: "team-standup", name: "Rama — morning standup in #tamtam-team" },
@@ -57,8 +56,6 @@ export const teamStandup = inngest.createFunction(
           summarise("Kofi (Growth)", growthLogs) +
           "\n" +
           summarise("Rama (COO)", cooLogs),
-        social_count: socialLogs.length,
-        growth_count: growthLogs.length,
       };
     });
 
@@ -81,70 +78,59 @@ export const teamStandup = inngest.createFunction(
       }),
     );
 
-    const dice = await step.run("roll-dice", async () => ({
-      kofi: Math.random() < KOFI_PROBABILITY,
-      awa: Math.random() < AWA_PROBABILITY,
-    }));
+    await step.sleep("kofi-pause", "30s");
 
-    if (dice.kofi) {
-      await step.sleep("kofi-pause", "30s");
-      await step.run("kofi-plan", async () =>
-        speakAs({
-          agent: "growth",
-          brief:
-            `Rama just posted the morning standup in #tamtam-team. ` +
-            `Add your plan for today — short, in your voice (Kofi). ` +
-            `Two lines max. Don't repeat Rama. Mention which leads ` +
-            `or pipeline moves you're prioritising. If you're chasing ` +
-            `Tiak-Tiak data, Air Sénégal / BAL / Shell follow-up, or ` +
-            `Casamançaise — say so. Confidence-energy.\n\n` +
-            `What Rama said:\n> ${ramaTurn.text ?? ""}`,
-          source: "standup.kofi",
-          maxTokens: 200,
-        }),
-      );
-    } else {
-      await step.run("kofi-skipped", async () =>
-        logAgentAction({
-          agent: "growth",
-          action: "team.standup.kofi_skipped",
-          metadata: { reason: "below_threshold" },
-          status: "skipped",
-        }),
-      );
-    }
+    // Kofi: contextual SKIP. He chimes only if he has something
+    // that builds on Rama's standup — not a parallel report.
+    const kofiTurn = await step.run("kofi-plan", async () =>
+      speakAs({
+        agent: "growth",
+        brief:
+          `Rama just posted the morning standup in #tamtam-team:\n` +
+          `> ${ramaTurn.text ?? ""}\n\n` +
+          `Decide as Kofi: do you have something to add that DIRECTLY ` +
+          `BUILDS on what Rama said? A specific lead you're chasing ` +
+          `today, a Tiak-Tiak data point, a follow-up timing question ` +
+          `for her, a hot pushback?\n\n` +
+          `If YES — ONE line, max two. Reference Rama by name (e.g. ` +
+          `"to Rama's point on Air Sénégal —"). Don't deliver an ` +
+          `independent update — respond TO her standup.\n\n` +
+          `If you have NOTHING that genuinely connects — respond with ` +
+          `EXACTLY: SKIP`,
+        source: "standup.kofi",
+        maxTokens: 200,
+        skipMarker: "SKIP",
+      }),
+    );
 
-    if (dice.awa) {
-      await step.sleep("awa-pause", "30s");
-      await step.run("awa-focus", async () =>
-        speakAs({
-          agent: "social",
-          brief:
-            `Rama posted the standup. Kofi may have added a line. ` +
-            `Add your focus for the day in your voice (Awa). Two ` +
-            `lines max. Don't repeat anyone. Specific: which ` +
-            `Showcase you're working on, what visual angle, what ` +
-            `you're stuck on, or what you want feedback on. ` +
-            `Voice-note energy.`,
-          source: "standup.awa",
-          maxTokens: 200,
-        }),
-      );
-    } else {
-      await step.run("awa-skipped", async () =>
-        logAgentAction({
-          agent: "social",
-          action: "team.standup.awa_skipped",
-          metadata: { reason: "below_threshold" },
-          status: "skipped",
-        }),
-      );
-    }
+    await step.sleep("awa-pause", "30s");
+
+    // Awa: contextual SKIP. References Rama and/or Kofi.
+    await step.run("awa-focus", async () =>
+      speakAs({
+        agent: "social",
+        brief:
+          `Rama posted the standup:\n> ${ramaTurn.text ?? ""}\n\n` +
+          (kofiTurn.text
+            ? `Kofi added:\n> ${kofiTurn.text}\n\n`
+            : `Kofi stayed quiet.\n\n`) +
+          `Decide as Awa: do you have something to add that BUILDS on ` +
+          `what Rama said${kofiTurn.text ? " or what Kofi said" : ""}? ` +
+          `A Showcase you're working on today, a visual angle, a ` +
+          `question for one of them?\n\n` +
+          `If YES — ONE line, max two. Reference Rama or Kofi by ` +
+          `name. React to them, don't run alongside.\n\n` +
+          `If you have NOTHING genuinely connective — respond with ` +
+          `EXACTLY: SKIP`,
+        source: "standup.awa",
+        maxTokens: 200,
+        skipMarker: "SKIP",
+      }),
+    );
 
     return {
       rama_posted: ramaTurn.posted,
-      kofi_chimed: dice.kofi,
-      awa_chimed: dice.awa,
+      kofi_chimed: kofiTurn.posted,
     };
   },
 );

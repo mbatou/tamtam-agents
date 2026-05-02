@@ -14,7 +14,7 @@
 import { inngest } from "@/lib/inngest";
 import {
   currentStatusFor,
-  STATUS_SCHEDULE,
+  STATUS_CYCLE,
 } from "@/lib/human-behavior";
 import { logAgentAction } from "@/lib/supabase";
 import { setAgentStatus } from "@/lib/slack";
@@ -49,7 +49,6 @@ export const statusRotation = inngest.createFunction(
             metadata: {
               text: slot.text,
               emoji: slot.emoji,
-              from_hour: slot.fromHour,
             },
             status: "completed",
           });
@@ -66,13 +65,13 @@ export const statusRotation = inngest.createFunction(
         }
       }
 
-      // Surface schedule keys in the run metadata for debugging.
+      // Surface cycle sizes in the run metadata for debugging.
       return {
         results,
-        schedule_size: {
-          social: STATUS_SCHEDULE.social.length,
-          growth: STATUS_SCHEDULE.growth.length,
-          coo: STATUS_SCHEDULE.coo.length,
+        cycle_size: {
+          social: STATUS_CYCLE.social.length,
+          growth: STATUS_CYCLE.growth.length,
+          coo: STATUS_CYCLE.coo.length,
         },
       };
     });
