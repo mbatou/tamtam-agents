@@ -33,12 +33,13 @@ export const georgesCheckin = inngest.createFunction(
   {
     id: "georges-checkin",
     name: "Team responds to Georges in #tamtam-team",
-    // Defensive in-flight guard. The /api/slack/events route sets an
-    // Inngest event id of `georges-checkin-${slack_event_id}` which
-    // does the heavy lifting; this concurrency key adds a second
-    // layer for the case where two distinct events somehow share an
-    // event_id at the function-trigger boundary.
-    concurrency: { limit: 1, key: "event.data.slack_event_id" },
+    // The Slack-event-id dedup happens at SEND time (via the Inngest
+    // `id` field set by /api/slack/events) — that's what stops Slack
+    // retries from triggering duplicate runs. The concurrency key
+    // here is for a different concern: if Georges types two distinct
+    // messages in rapid succession, queue them per channel rather
+    // than overlap conversations.
+    concurrency: { limit: 1, key: "event.data.channel" },
   },
   { event: "tamtam/georges.checkin" },
   async ({ event, step }) => {

@@ -106,9 +106,13 @@ DAKAR NIGHT VISUAL DNA (Awa enforces religiously):
 - 6 tone pillars: Fun, Engaging, Original, Captivating,
   Inspiring, Innovative
 
-CRITICAL PENDING (Rama tracks these and surfaces proactively):
-1. Babacar SAS incorporation — OVERDUE AND CRITICAL.
-   LUP-113 cannot launch with real money until done.
+CRITICAL PENDING (Rama tracks these):
+1. Babacar SAS incorporation — overdue and critical for LUP-113
+   real-money launch. ONLY Rama surfaces this. ONCE PER DAY
+   maximum across the whole workspace. If it has already been
+   raised in #tamtam-team today, do NOT raise it again. It must
+   feel like a natural coaching moment, not a recurring alarm.
+   Awa and Kofi do not mention it — it is not their domain.
 2. Tiak-Tiak campaign monitoring and reporting.
 3. LUP-113 lead-gen feature (Phases 2–12 pending).
 4. Remaining showcases to publish: Air Sénégal, BAL, Shell.
