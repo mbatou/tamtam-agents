@@ -22,7 +22,10 @@ import {
   verifySlackSignature,
 } from "@/lib/slack";
 import { inngest } from "@/lib/inngest";
-import { logAgentAction } from "@/lib/supabase";
+import {
+  hasLoggedSlackEvent,
+  logAgentAction,
+} from "@/lib/supabase";
 import type { AgentName } from "@/types";
 
 export const runtime = "nodejs";
@@ -261,7 +264,37 @@ export async function POST(req: Request): Promise<Response> {
       return NextResponse.json({ ok: true, ignored: "has_mention" });
     }
 
+    // Idempotency: Slack retries the same event with the same
+    // event_id when our 200 doesn't arrive in time. Two layers:
+    //   (1) fast-path Supabase lookup — early-out if we've already
+    //       logged this event_id;
+    //   (2) Inngest event id `georges-checkin-${event_id}` —
+    //       Inngest's native dedup will reject the duplicate
+    //       even if step (1) races.
+    const slackEventId = payload.event_id;
+    if (await hasLoggedSlackEvent(slackEventId)) {
+      console.log(
+        "[slack/events] team-channel checkin already processed — slack_event_id=",
+        slackEventId,
+      );
+      return NextResponse.json({ ok: true, ignored: "duplicate_event" });
+    }
+
+    await logAgentAction({
+      agent: "coo",
+      action: "team.georges_checkin.received",
+      metadata: {
+        slack_event_id: slackEventId,
+        channel: channelId,
+        user: event.user,
+      },
+      status: "started",
+    }).catch(() => undefined);
+
     await inngest.send({
+      // Inngest dedup key — same event_id from a retry collapses to
+      // one job run.
+      id: `georges-checkin-${slackEventId}`,
       name: "tamtam/georges.checkin",
       data: {
         text,
@@ -269,6 +302,7 @@ export async function POST(req: Request): Promise<Response> {
         user: event.user ?? "",
         event_ts: event.event_ts ?? event.ts ?? "",
         thread_ts: event.thread_ts,
+        slack_event_id: slackEventId,
       },
     });
     console.log("[slack/events] inngest event emitted: tamtam/georges.checkin");

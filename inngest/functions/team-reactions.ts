@@ -35,11 +35,14 @@ export const reactToPostPublished = inngest.createFunction(
         agent: "growth",
         brief:
           `Awa just published a LinkedIn post (${external_post_id}). ` +
-          `React in #tamtam-team like a teammate would — short ` +
-          `congrats with one specific observation about how this ` +
-          `helps your outreach (or what kind of brand it warms up ` +
-          `the door for). Two lines max.\n\n` +
-          `Caption:\n${captionPreview}`,
+          `React in #tamtam-team — address her by name (e.g. "Awa ` +
+          `that angle is exactly what I needed —"). Connect it to ` +
+          `your outreach: which specific brand or kind of brand ` +
+          `does this post warm up the door for, and what's your ` +
+          `next move because of it (reaching out, timing a follow-` +
+          `up, repositioning a pitch deck). Two lines max. Specific, ` +
+          `not generic. Operational, not just congratulatory.\n\n` +
+          `Caption Awa just shipped:\n${captionPreview}`,
         source: "react.post_published",
         maxTokens: 200,
       });
@@ -64,10 +67,14 @@ export const reactToLeadResearched = inngest.createFunction(
         agent: "social",
         brief:
           `Kofi just added a new lead in the pipeline: ${company}. ` +
-          `React in #tamtam-team like a teammate would — ask Kofi ` +
-          `one specific question about the brand so you can plan ` +
-          `content that warms up the door before his outreach lands. ` +
-          `Two lines max.\n\n` +
+          `React in #tamtam-team — address Kofi by name (e.g. ` +
+          `"Kofi —"). Connect to your content calendar: are you ` +
+          `already warming up that brand's space, do you have a ` +
+          `Showcase angle that would land before his outreach, ` +
+          `should he hold off until something specific drops? ` +
+          `Two lines max. Operational, specific. If you have nothing ` +
+          `relevant on the calendar, ask one specific question about ` +
+          `the brand instead.\n\n` +
           `Notes Kofi captured:\n${notes ?? "(none yet)"}`,
         source: "react.lead_researched",
         maxTokens: 200,

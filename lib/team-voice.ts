@@ -41,11 +41,22 @@ export interface SpeakAsInput {
   maxTokens?: number;
   /** Skip if no team channel and no override. Default true. */
   skipIfNoTeamChannel?: boolean;
+  /**
+   * Contextual SKIP. When set, the brief should authorise Claude to
+   * reply with this token (e.g. "SKIP") if the agent has nothing
+   * specific to add. The agent_logs row is recorded as a skip and
+   * nothing is posted.
+   *
+   * Used by chime-in flows so Kofi/Awa stay quiet when they don't
+   * have something genuinely additive — instead of always firing
+   * because a probability roll said so.
+   */
+  skipMarker?: string;
 }
 
 export interface SpeakAsResult {
   posted: boolean;
-  reason?: "no_team_channel" | "skipped" | "ok";
+  reason?: "no_team_channel" | "skipped" | "skipped_by_agent" | "ok";
   slack_ts?: string;
   text?: string;
 }
@@ -105,6 +116,22 @@ export async function speakAs(input: SpeakAsInput): Promise<SpeakAsResult> {
       status: "skipped",
     });
     return { posted: false, reason: "skipped" };
+  }
+
+  // Contextual SKIP — Claude was authorised to opt out and did so.
+  // We treat the message as "agent decided not to chime in" and
+  // record it for audit instead of posting.
+  if (
+    input.skipMarker &&
+    text.toUpperCase().startsWith(input.skipMarker.toUpperCase())
+  ) {
+    await logAgentAction({
+      agent: input.agent,
+      action: `team.${input.source}.skipped_by_agent`,
+      metadata: { source: input.source, raw_first_chars: text.slice(0, 80) },
+      status: "skipped",
+    });
+    return { posted: false, reason: "skipped_by_agent" };
   }
 
   const post = await respondWithTyping({

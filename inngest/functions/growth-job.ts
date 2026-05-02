@@ -5,20 +5,16 @@
  *   - tamtam/growth.mentioned    — Slack @-mention of @Kofi
  *   - tamtam/growth.run          — manual trigger from /api/agents/growth
  *
- * Working-hours gate + human response delay applied to mention/manual
- * triggers; cron triggers bypass.
+ * Human "thinking" delay (2–8 min) on mention/manual; cron bypasses.
+ * Working-hours gate removed in Session 5.
  */
 
 import { inngest } from "@/lib/inngest";
 import { runGrowthAgent } from "@/agents/growth";
-import { respondWithTyping } from "@/lib/slack";
 import {
   delayToInngest,
-  getOutOfHoursMessage,
   getResponseDelay,
-  isWithinWorkingHours,
 } from "@/lib/human-behavior";
-import { logAgentAction } from "@/lib/supabase";
 
 export const growthJob = inngest.createFunction(
   { id: "growth-job", name: "Kofi — Growth Agent run" },
@@ -45,38 +41,9 @@ export const growthJob = inngest.createFunction(
       : null;
 
     const triggerSource: "manual" | "cron" | "approval" = runData?.trigger ?? "manual";
-    const shouldGate = triggerSource !== "cron";
+    const shouldDelay = triggerSource !== "cron";
 
-    if (shouldGate && !isWithinWorkingHours("growth")) {
-      if (mentionData) {
-        await step.run("ooo-reply", async () => {
-          await respondWithTyping({
-            agent: "growth",
-            channel: mentionData.channel,
-            threadTs: mentionData.thread_ts,
-            text: getOutOfHoursMessage("growth"),
-          });
-          await logAgentAction({
-            agent: "growth",
-            action: "run.skipped.out_of_hours",
-            metadata: { channel: mentionData.channel, user: mentionData.user },
-            status: "skipped",
-          });
-        });
-      } else {
-        await step.run("log-ooo-skip", async () =>
-          logAgentAction({
-            agent: "growth",
-            action: "run.skipped.out_of_hours",
-            metadata: { trigger: triggerSource },
-            status: "skipped",
-          }),
-        );
-      }
-      return { skipped: "outside_working_hours" };
-    }
-
-    if (shouldGate) {
+    if (shouldDelay) {
       const delayMs = getResponseDelay("growth");
       await step.sleep("human-delay", delayToInngest(delayMs));
     }
