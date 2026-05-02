@@ -1,17 +1,33 @@
 /**
  * Slack Events API endpoint — receives traffic from THREE Slack apps.
  *
- * Pipeline (in order):
- *   1. validateEnv()                 — fail fast if Vercel is misconfigured
- *   2. parse JSON enough to read api_app_id     (URL verification short-circuits here)
- *   3. verify signature with the matching app's signing secret
- *   4. STRICT bot guard              — drop anything with bot_id (loop guard)
- *   5. team-channel branch           — special commands + Georges check-in + member_joined
- *   6. agent-channel branch          — app_mention → routed by channel id
+ * Critical-path order (everything before the 200 must be sub-second):
+ *   1. validateEnv()                    sync, fast
+ *   2. parse JSON                       sync, fast
+ *   3. url_verification short-circuit   sync, fast
+ *   4. signature verification           sync HMAC, fast
+ *   5. RETURN 200 IMMEDIATELY           ← Slack gets the ACK here
+ *   6. fire-and-forget dispatch         ← all routing + Inngest sends
  *
- * Each Slack app (Awa / Kofi / Rama) points at this same URL. We
- * disambiguate by reading `api_app_id` from the body and looking up
- * the right signing secret via `getSigningSecretForApp(appId)`.
+ * Slack retries when our 200 arrives after ~3 seconds. The previous
+ * version did Supabase JSONB lookups + agent_logs inserts BEFORE the
+ * ACK; Vercel cold starts pushed total response time over the
+ * threshold, Slack retried, and we ended up with three runs of
+ * `georges-checkin` for one human message.
+ *
+ * The new design:
+ *   - All async work moves into `dispatchSlackEvent` which we don't
+ *     await. The function-level Promise stays alive long enough for
+ *     the Inngest POST to flush in normal Vercel runtime behaviour.
+ *   - All Inngest sends carry an `id` derived from the Slack
+ *     `event_id`. Inngest's native event-id dedup is now the ONLY
+ *     dedup layer — and it's reliable because the id is ours and
+ *     the same id from a Slack retry collapses to one job run.
+ *
+ * Note on fire-and-forget: if Inngest sends ever start dropping
+ * under cold-start pressure, swap to `waitUntil` from
+ * `@vercel/functions`. The promise structure here is already shaped
+ * for that — wrap the dispatch call.
  */
 
 import { NextResponse } from "next/server";
@@ -22,10 +38,6 @@ import {
   verifySlackSignature,
 } from "@/lib/slack";
 import { inngest } from "@/lib/inngest";
-import {
-  hasLoggedSlackEvent,
-  logAgentAction,
-} from "@/lib/supabase";
 import type { AgentName } from "@/types";
 
 export const runtime = "nodejs";
@@ -47,7 +59,6 @@ interface SlackInboundEvent {
   thread_ts?: string;
   bot_id?: string;
   subtype?: string;
-  /** Set on member_joined_channel events. */
   inviter?: string;
 }
 
@@ -90,7 +101,7 @@ function detectTeamCommand(text: string): TeamCommand | null {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Handler                                                                   */
+/*  Handler — sync to 200, async dispatch after                               */
 /* -------------------------------------------------------------------------- */
 
 export async function POST(req: Request): Promise<Response> {
@@ -107,37 +118,25 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const rawBody = await req.text();
-  console.log("[slack/events] raw body:", rawBody);
 
-  // Parse once, up front — we need api_app_id to choose the right
-  // signing secret. If the body is malformed, reject before we even
-  // try to verify a signature (a malformed body cannot be signed
-  // correctly anyway).
   let payload: SlackPayload;
   try {
     payload = JSON.parse(rawBody) as SlackPayload;
   } catch {
-    console.log("[slack/events] body is not valid JSON");
     return new NextResponse("invalid json", { status: 400 });
   }
 
-  // Slack URL verification handshake — Slack sends this from each
-  // app when the URL is added to Event Subscriptions. No signature
-  // is sent for this, so handle it before signature checks.
+  // url_verification has no signature — short-circuit before we
+  // try to verify one.
   if (payload.type === "url_verification") {
-    console.log("[slack/events] url_verification handshake");
     return NextResponse.json({ challenge: payload.challenge });
   }
 
   if (payload.type !== "event_callback") {
-    console.log("[slack/events] ignored non_event_callback");
     return NextResponse.json({ ok: true, ignored: "non_event_callback" });
   }
 
-  const appId = payload.api_app_id;
-  console.log("[slack/events] api_app_id:", appId);
-  const signingSecret = getSigningSecretForApp(appId);
-
+  const signingSecret = getSigningSecretForApp(payload.api_app_id);
   const ok = verifySlackSignature({
     signingSecret,
     rawBody,
@@ -147,49 +146,76 @@ export async function POST(req: Request): Promise<Response> {
   if (!ok) {
     console.log(
       "[slack/events] signature verification FAILED for app:",
-      appId,
+      payload.api_app_id,
     );
     return new NextResponse("invalid signature", { status: 401 });
   }
 
-  const event = payload.event;
-  console.log("[slack/events] event:", JSON.stringify(event));
+  // ACK to Slack IMMEDIATELY — everything below runs after the
+  // response is on the wire. Slack's 3-second retry budget cannot
+  // be tripped by anything we do post-return.
+  const response = NextResponse.json({ ok: true });
 
-  // STRICT bot guard. Any bot-originated event drops here — including
-  // bot-originated app_mentions. With three Slack apps now posting in
-  // shared channels, this is the loop guard: when Awa posts, the
-  // event Slack delivers carries Awa's bot_id, and we must never
-  // re-trigger.
+  // Fire-and-forget. If Inngest sends ever start dropping under
+  // Vercel cold starts, wrap this in `waitUntil` from
+  // `@vercel/functions` — same dispatch, longer keep-alive.
+  dispatchSlackEvent(payload).catch((err: unknown) => {
+    console.error("[slack/events] dispatch error:", err);
+  });
+
+  return response;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Dispatch — runs AFTER the 200                                             */
+/* -------------------------------------------------------------------------- */
+
+async function dispatchSlackEvent(payload: SlackEventCallback): Promise<void> {
+  const event = payload.event;
+  const eventId = payload.event_id;
+
+  console.log(
+    "[slack/events] dispatch:",
+    "event_id=",
+    eventId,
+    "type=",
+    event.type,
+    "channel=",
+    event.channel,
+  );
+
+  // Strict bot guard. With three Slack apps posting in shared
+  // channels, a missed bot_id is a loop hazard.
   if (event.bot_id) {
     console.log(
       "[slack/events] ignored bot message — bot_id=",
       event.bot_id,
-      "type=",
-      event.type,
     );
-    return NextResponse.json({ ok: true, ignored: "bot_message" });
+    return;
   }
 
   if (event.subtype) {
     console.log("[slack/events] ignored — subtype:", event.subtype);
-    return NextResponse.json({ ok: true, ignored: `subtype_${event.subtype}` });
+    return;
   }
 
   const channelId = event.channel ?? "";
   const text = event.text ?? "";
 
   /* ────────────────────────────────────────────────────────────────────── */
-  /*  Branch A: #tamtam-team — commands, check-ins, onboarding              */
+  /*  Branch A: #tamtam-team                                                */
   /* ────────────────────────────────────────────────────────────────────── */
 
   const teamChannel = env.SLACK_CHANNEL_TEAM;
   if (teamChannel && channelId === teamChannel) {
-    // Member joined the team channel — fire the onboarding flow.
     if (event.type === "member_joined_channel") {
       if (!event.user) {
-        return NextResponse.json({ ok: true, ignored: "no_user" });
+        console.log("[slack/events] member_joined without user — ignored");
+        return;
       }
       await inngest.send({
+        // Dedup: Slack retries of the same join collapse to one onboarding.
+        id: `member-joined-${eventId}`,
         name: "tamtam/team.member-joined",
         data: {
           user_id: event.user,
@@ -201,13 +227,12 @@ export async function POST(req: Request): Promise<Response> {
         "[slack/events] inngest event emitted: tamtam/team.member-joined",
         event.user,
       );
-      return NextResponse.json({ ok: true, dispatched: "member_joined" });
+      return;
     }
 
-    // Plain message in the team channel.
     if (text.trim().length === 0) {
       console.log("[slack/events] team-channel message ignored — empty text");
-      return NextResponse.json({ ok: true, ignored: "empty_text" });
+      return;
     }
 
     const command = detectTeamCommand(text);
@@ -216,30 +241,34 @@ export async function POST(req: Request): Promise<Response> {
       switch (command.kind) {
         case "standup":
           await inngest.send({
+            id: `team-standup-${eventId}`,
             name: "tamtam/team.standup",
             data: { trigger: "manual" },
           });
           break;
         case "wrapup":
           await inngest.send({
+            id: `team-wrapup-${eventId}`,
             name: "tamtam/team.friday-wrapup",
             data: { trigger: "manual" },
           });
           break;
         case "moment":
           await inngest.send({
+            id: `team-moment-${eventId}`,
             name: "tamtam/team.random-moment",
             data: { trigger: "manual", slot: "manual" },
           });
           break;
         case "test_reactions":
           await inngest.send({
+            id: `team-test-reactions-${eventId}`,
             name: "tamtam/team.test-reactions",
             data: { trigger: "manual" },
           });
           break;
       }
-      return NextResponse.json({ ok: true, dispatched: `team.${command.kind}` });
+      return;
     }
 
     const georgesId = env.SLACK_GEORGES_USER_ID;
@@ -247,7 +276,7 @@ export async function POST(req: Request): Promise<Response> {
       console.log(
         "[slack/events] team-channel message ignored — SLACK_GEORGES_USER_ID not set",
       );
-      return NextResponse.json({ ok: true, ignored: "checkin_disabled" });
+      return;
     }
     if (event.user !== georgesId) {
       console.log(
@@ -255,46 +284,20 @@ export async function POST(req: Request): Promise<Response> {
         event.user,
         ")",
       );
-      return NextResponse.json({ ok: true, ignored: "not_georges" });
+      return;
     }
     if (text.includes("<@")) {
       console.log(
         "[slack/events] team-channel message ignored — contains @-mention",
       );
-      return NextResponse.json({ ok: true, ignored: "has_mention" });
+      return;
     }
 
-    // Idempotency: Slack retries the same event with the same
-    // event_id when our 200 doesn't arrive in time. Two layers:
-    //   (1) fast-path Supabase lookup — early-out if we've already
-    //       logged this event_id;
-    //   (2) Inngest event id `georges-checkin-${event_id}` —
-    //       Inngest's native dedup will reject the duplicate
-    //       even if step (1) races.
-    const slackEventId = payload.event_id;
-    if (await hasLoggedSlackEvent(slackEventId)) {
-      console.log(
-        "[slack/events] team-channel checkin already processed — slack_event_id=",
-        slackEventId,
-      );
-      return NextResponse.json({ ok: true, ignored: "duplicate_event" });
-    }
-
-    await logAgentAction({
-      agent: "coo",
-      action: "team.georges_checkin.received",
-      metadata: {
-        slack_event_id: slackEventId,
-        channel: channelId,
-        user: event.user,
-      },
-      status: "started",
-    }).catch(() => undefined);
-
+    // The CRITICAL dedup: Slack retries this exact event_id when our
+    // 200 was slow. Inngest collapses identical event ids to a single
+    // function run.
     await inngest.send({
-      // Inngest dedup key — same event_id from a retry collapses to
-      // one job run.
-      id: `georges-checkin-${slackEventId}`,
+      id: `georges-checkin-${eventId}`,
       name: "tamtam/georges.checkin",
       data: {
         text,
@@ -302,11 +305,15 @@ export async function POST(req: Request): Promise<Response> {
         user: event.user ?? "",
         event_ts: event.event_ts ?? event.ts ?? "",
         thread_ts: event.thread_ts,
-        slack_event_id: slackEventId,
+        slack_event_id: eventId,
       },
     });
-    console.log("[slack/events] inngest event emitted: tamtam/georges.checkin");
-    return NextResponse.json({ ok: true, dispatched: "georges_checkin" });
+    console.log(
+      "[slack/events] inngest event emitted: tamtam/georges.checkin",
+      "id=",
+      `georges-checkin-${eventId}`,
+    );
+    return;
   }
 
   /* ────────────────────────────────────────────────────────────────────── */
@@ -315,7 +322,7 @@ export async function POST(req: Request): Promise<Response> {
 
   if (event.type !== "app_mention") {
     console.log("[slack/events] ignored event type:", event.type);
-    return NextResponse.json({ ok: true, ignored: event.type });
+    return;
   }
 
   const agent = detectAgentFromChannel(channelId);
@@ -335,36 +342,27 @@ export async function POST(req: Request): Promise<Response> {
       env.SLACK_CHANNEL_GROWTH,
       env.SLACK_CHANNEL_COO,
     );
-    return NextResponse.json({ ok: true, ignored: "unrecognized_channel" });
+    return;
   }
 
-  await Promise.all([
-    inngest.send({
-      name: MENTION_EVENT_NAME[agent],
-      data: {
-        text,
-        channel: channelId,
-        user: event.user ?? "",
-        thread_ts: event.thread_ts,
-        event_ts: event.event_ts ?? event.ts ?? "",
-      },
-    }),
-    logAgentAction({
-      agent,
-      action: "slack.mention.received",
-      metadata: {
-        channel: channelId,
-        user: event.user ?? null,
-        ts: event.event_ts ?? event.ts ?? null,
-        api_app_id: appId,
-      },
-      status: "started",
-    }).catch(() => undefined),
-  ]);
+  // app_mentions get the same id-dedup treatment — Slack retries
+  // these too.
+  await inngest.send({
+    id: `mention-${eventId}`,
+    name: MENTION_EVENT_NAME[agent],
+    data: {
+      text,
+      channel: channelId,
+      user: event.user ?? "",
+      thread_ts: event.thread_ts,
+      event_ts: event.event_ts ?? event.ts ?? "",
+    },
+  });
 
   console.log(
     "[slack/events] inngest event emitted:",
     MENTION_EVENT_NAME[agent],
+    "id=",
+    `mention-${eventId}`,
   );
-  return NextResponse.json({ ok: true, dispatched: agent });
 }

@@ -66,9 +66,11 @@ export const teamStandup = inngest.createFunction(
           `It is a weekday morning in Dakar. Compose the team standup ` +
           `for #tamtam-team. Acknowledge what happened yesterday ` +
           `(specific, never generic). Set the tone for today. Name ` +
-          `Awa and Kofi with their priorities. If Babacar's SAS or ` +
-          `the Tiak-Tiak J+7 / J+15 dates are relevant given the ` +
-          `current date, surface them naturally. 6 lines max. ` +
+          `Awa and Kofi with their priorities. If the Tiak-Tiak ` +
+          `J+7 / J+15 dates are relevant given the current date, ` +
+          `surface them naturally. (Babacar's SAS: surface ONLY if ` +
+          `it has not already been raised today and only if it ` +
+          `genuinely fits — never as a daily reminder.) 6 lines max. ` +
           `1–2 emojis at most. Speak like a leader who read the ` +
           `logs, not a reporter listing them.\n\n` +
           `Yesterday's activity:\n` +
