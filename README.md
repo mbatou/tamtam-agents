@@ -229,6 +229,62 @@ list is the const `REQUIRED_ENV_VARS`. Optional variables
 `SLACK_GEORGES_USER_ID`) are not in that list and have sensible
 defaults or graceful fallbacks.
 
+### Database migrations
+
+`supabase/migrations/` holds idempotent SQL migrations that extend
+the schema beyond what was first provisioned. Run them in order via
+the Supabase CLI:
+
+```bash
+supabase db push
+```
+
+Or paste the SQL into Supabase Studio → SQL Editor for the project.
+All migrations use `ADD COLUMN IF NOT EXISTS` and similar guards, so
+re-running is safe.
+
+Current migrations:
+
+- `0001_kofi_autonomous_columns.sql` — adds the columns Session 5B
+  introduced for Kofi's autonomous prospecting (intent signal,
+  confidence score, follow-up timestamps, response classification,
+  escalation flag, etc.) plus the indexes the day-4/day-9 cadence
+  queries depend on.
+
+### Kofi autonomous prospecting (Session 5B)
+
+Kofi runs a full prospecting day at **08:00 WAT, Mon–Sat** without
+asking permission. Cron-driven `kofi-daily-prospecting`:
+
+1. snapshots Awa's last 7 days of content (warmth signal),
+2. researches **10 Senegalese leads** via Claude (Gojiberry intent
+   framework — Awa-warmed → buying-signals → cold ICP),
+3. sends LinkedIn connection requests (graceful fallback: "queued
+   for manual send" until LinkedIn messaging API approval lands),
+4. sends email-1 via Resend (3-sentence curiosity message, no
+   pitch, no link, no Tamtam name unless they already know us),
+5. fires day-4 follow-ups (with Tiak-Tiak proof) and day-9
+   soft-closes from the cadence,
+6. marks leads cold after 9 days of silence,
+7. posts the morning brief to `#tamtam-growth` in his voice.
+
+Reply detection runs through `/api/webhooks/email-reply`. Wire
+whichever inbound product you choose (Resend Inbound, SendGrid
+Inbound Parse, Mailgun…) to POST to that URL with HMAC-SHA256 of
+the raw body in `X-Webhook-Signature`, signed with
+`RESEND_WEBHOOK_SECRET`. The classifier (`kofi-email-replied`) then:
+
+- 'positive' → DMs Georges with the full context template, marks
+  the lead `warm` and `escalated_to_georges = true`
+- 'neutral'  → leaves status `contacted`, cadence continues
+- 'negative' → status `rejected`, no further outreach
+- 'referral' → logged on the existing lead for follow-up
+
+LinkedIn replies depend on partnership-tier API access (Sales
+Navigator API / Talent Solutions). Until that lands, the
+`kofi-response-monitor` cron runs cleanly but finds nothing on
+the LinkedIn side. Email reply detection is unaffected.
+
 ### Generating Supabase types
 
 `types/database.ts` is hand-written to match `supabase gen types

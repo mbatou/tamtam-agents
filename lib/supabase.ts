@@ -24,6 +24,7 @@ import type {
   ApprovalType,
   Lead,
   LeadInsert,
+  LeadResponseClassification,
   Post,
   PostInsert,
   PostStatus,
@@ -200,10 +201,17 @@ export async function upsertLead(input: LeadInsert): Promise<Lead> {
       .from("leads")
       .update({
         contact_name: input.contact_name ?? null,
+        contact_title: input.contact_title ?? null,
         email: input.email ?? null,
         status: input.status ?? "new",
         last_contact_at: input.last_contact_at ?? null,
         notes: input.notes ?? null,
+        intent_signal: input.intent_signal ?? null,
+        confidence_score: input.confidence_score ?? null,
+        awa_warmup: input.awa_warmup ?? false,
+        outreach_channel: input.outreach_channel ?? null,
+        why_now: input.why_now ?? null,
+        linkedin_url: input.linkedin_url ?? null,
       })
       .eq("id", (existing as { id: string }).id)
       .select()
@@ -219,10 +227,17 @@ export async function upsertLead(input: LeadInsert): Promise<Lead> {
     .insert({
       company: input.company,
       contact_name: input.contact_name ?? null,
+      contact_title: input.contact_title ?? null,
       email: input.email ?? null,
       status: input.status ?? "new",
       last_contact_at: input.last_contact_at ?? null,
       notes: input.notes ?? null,
+      intent_signal: input.intent_signal ?? null,
+      confidence_score: input.confidence_score ?? null,
+      awa_warmup: input.awa_warmup ?? false,
+      outreach_channel: input.outreach_channel ?? null,
+      why_now: input.why_now ?? null,
+      linkedin_url: input.linkedin_url ?? null,
     })
     .select()
     .single();
@@ -230,6 +245,159 @@ export async function upsertLead(input: LeadInsert): Promise<Lead> {
     throw new Error(`[supabase] upsertLead insert failed: ${error.message}`);
   }
   return data as unknown as Lead;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Lead lifecycle (Session 5B — Kofi autonomous)                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Leads `last_contact_at` was N days ago and we haven't yet sent
+ * the day-N follow-up. The N=4 / N=9 shape mirrors Kofi's cadence.
+ */
+async function getLeadsAtDayOffset(
+  daysAgo: number,
+  followupColumn: "day4_sent_at" | "day9_sent_at",
+): Promise<Lead[]> {
+  const targetDay = new Date();
+  targetDay.setUTCDate(targetDay.getUTCDate() - daysAgo);
+  const startOfDay = new Date(targetDay);
+  startOfDay.setUTCHours(0, 0, 0, 0);
+  const endOfDay = new Date(targetDay);
+  endOfDay.setUTCHours(23, 59, 59, 999);
+
+  const { data, error } = await getSupabaseAdmin()
+    .from("leads")
+    .select("*")
+    .eq("status", "contacted")
+    .is(followupColumn, null)
+    .gte("last_contact_at", startOfDay.toISOString())
+    .lte("last_contact_at", endOfDay.toISOString());
+
+  if (error) {
+    throw new Error(
+      `[supabase] getLeadsAtDayOffset(${daysAgo}) failed: ${error.message}`,
+    );
+  }
+  return (data ?? []) as unknown as Lead[];
+}
+
+export function getLeadsNeedingDay4Followup(): Promise<Lead[]> {
+  return getLeadsAtDayOffset(4, "day4_sent_at");
+}
+
+export function getLeadsNeedingDay9Followup(): Promise<Lead[]> {
+  return getLeadsAtDayOffset(9, "day9_sent_at");
+}
+
+/**
+ * Leads still in 'contacted' beyond day 9 — these go cold and
+ * stop receiving outreach.
+ */
+export async function getLeadsToMarkCold(): Promise<Lead[]> {
+  const tenDaysAgo = new Date();
+  tenDaysAgo.setUTCDate(tenDaysAgo.getUTCDate() - 10);
+  const { data, error } = await getSupabaseAdmin()
+    .from("leads")
+    .select("*")
+    .eq("status", "contacted")
+    .lt("last_contact_at", tenDaysAgo.toISOString());
+
+  if (error) {
+    throw new Error(`[supabase] getLeadsToMarkCold failed: ${error.message}`);
+  }
+  return (data ?? []) as unknown as Lead[];
+}
+
+export async function markFollowupSent(input: {
+  leadId: string;
+  which: "day4" | "day9";
+}): Promise<void> {
+  const column = input.which === "day4" ? "day4_sent_at" : "day9_sent_at";
+  const now = new Date().toISOString();
+  const { error } = await getSupabaseAdmin()
+    .from("leads")
+    .update({
+      [column]: now,
+      last_contact_at: now,
+    } as never)
+    .eq("id", input.leadId);
+
+  if (error) {
+    throw new Error(
+      `[supabase] markFollowupSent(${input.leadId}, ${input.which}) failed: ${error.message}`,
+    );
+  }
+}
+
+export async function setLeadResponseClassification(input: {
+  leadId: string;
+  classification: LeadResponseClassification;
+  status: Lead["status"];
+  responseNote?: string;
+}): Promise<Lead> {
+  const supabase = getSupabaseAdmin();
+  const update: Record<string, unknown> = {
+    response_classification: input.classification,
+    status: input.status,
+  };
+  if (input.responseNote) {
+    // Append to notes, don't overwrite — preserve Kofi's research.
+    const existing = await getLead(input.leadId);
+    update.notes =
+      (existing.notes ? existing.notes + "\n\n" : "") +
+      `[${new Date().toISOString()}] response (${input.classification}): ${input.responseNote}`;
+  }
+
+  const { data, error } = await supabase
+    .from("leads")
+    .update(update as never)
+    .eq("id", input.leadId)
+    .select()
+    .single();
+  if (error) {
+    throw new Error(
+      `[supabase] setLeadResponseClassification(${input.leadId}) failed: ${error.message}`,
+    );
+  }
+  return data as unknown as Lead;
+}
+
+export async function markLeadEscalated(leadId: string): Promise<void> {
+  const { error } = await getSupabaseAdmin()
+    .from("leads")
+    .update({
+      escalated_to_georges: true,
+      escalated_at: new Date().toISOString(),
+    } as never)
+    .eq("id", leadId);
+  if (error) {
+    throw new Error(
+      `[supabase] markLeadEscalated(${leadId}) failed: ${error.message}`,
+    );
+  }
+}
+
+/**
+ * Find a lead by recipient email. Used by the email-reply webhook
+ * to associate the inbound message with the right Kofi conversation.
+ * Returns null if no match (still ingest the reply for audit).
+ */
+export async function findLeadByEmail(email: string): Promise<Lead | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("leads")
+    .select("*")
+    .eq("email", email)
+    .order("last_contact_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.warn(
+      `[supabase] findLeadByEmail(${email}) failed: ${error.message}`,
+    );
+    return null;
+  }
+  return (data ?? null) as unknown as Lead | null;
 }
 
 export async function getLead(leadId: string): Promise<Lead> {

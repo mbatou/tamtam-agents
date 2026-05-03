@@ -143,6 +143,27 @@ export const env = {
     // Optional — only required once we wire publish_post to the real API.
     return optional("LINKEDIN_PAGE_ID");
   },
+  /**
+   * Optional. OAuth bearer token for LinkedIn messaging / connection
+   * requests. The standard "Share on LinkedIn" approval does not
+   * cover messaging — those endpoints are gated behind Sales
+   * Navigator API / partnership programs. When unset, lib/linkedin.ts
+   * falls back to "log + post a queued-for-manual-send line in
+   * #tamtam-growth" instead of failing the function.
+   */
+  get LINKEDIN_ACCESS_TOKEN(): string | undefined {
+    return optional("LINKEDIN_ACCESS_TOKEN");
+  },
+
+  /**
+   * Optional. Shared secret used to verify inbound webhook payloads
+   * from whichever inbound-email service routes replies to us
+   * (Resend Inbound, SendGrid Inbound Parse, etc.). When unset,
+   * /api/webhooks/email-reply rejects every request with 401.
+   */
+  get RESEND_WEBHOOK_SECRET(): string | undefined {
+    return optional("RESEND_WEBHOOK_SECRET");
+  },
 
   // ─── App ────────────────────────────────────────────────────────────
   get APP_URL(): string {

@@ -35,16 +35,22 @@ export const reactToPostPublished = inngest.createFunction(
         agent: "growth",
         brief:
           `Awa just published a LinkedIn post (${external_post_id}). ` +
-          `React in #tamtam-team — address her by name (e.g. "Awa ` +
-          `that angle is exactly what I needed —"). Connect it to ` +
-          `your outreach: which specific brand or kind of brand ` +
-          `does this post warm up the door for, and what's your ` +
-          `next move because of it (reaching out, timing a follow-` +
-          `up, repositioning a pitch deck). Two lines max. Specific, ` +
-          `not generic. Operational, not just congratulatory.\n\n` +
+          `React in #tamtam-team — address Awa by name. Read the ` +
+          `caption and identify the brand or industry it warms up. ` +
+          `Connect it to your outreach plan: roughly how many leads ` +
+          `you have in that space, and your timing — typically you ` +
+          `let the content breathe a day before reaching out so the ` +
+          `audience encounters Tamtam's name first.\n\n` +
+          `Two lines max. Specific. Operational. Sound like a ` +
+          `teammate who saw the post in their feed and immediately ` +
+          `opened the CRM, not a congratulator.\n\n` +
+          `Example shape (NOT a template — write in your voice):\n` +
+          `"Awa — that Air Sénégal angle is exactly what I needed. ` +
+          `I've got 3 leads in that space, timing my outreach for ` +
+          `tomorrow morning to let the content breathe."\n\n` +
           `Caption Awa just shipped:\n${captionPreview}`,
         source: "react.post_published",
-        maxTokens: 200,
+        maxTokens: 220,
       });
     });
   },

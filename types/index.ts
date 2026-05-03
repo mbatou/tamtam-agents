@@ -83,27 +83,77 @@ export type PostInsert = Omit<Post, "id" | "created_at"> & {
 export type LeadStatus =
   | "new"
   | "researching"
+  | "researched"
   | "queued"
   | "contacted"
+  | "warm"
   | "replied"
+  | "cold"
+  | "rejected"
   | "won"
   | "lost"
   | "do_not_contact";
+
+export type LeadOutreachChannel = "linkedin" | "email" | "both";
+
+export type LeadResponseClassification =
+  | "positive"
+  | "neutral"
+  | "negative"
+  | "referral";
 
 export interface Lead {
   id: string;
   company: string;
   contact_name: string | null;
+  contact_title: string | null;
   email: string | null;
   status: LeadStatus;
   last_contact_at: string | null;
   notes: string | null;
   created_at: string;
+  /* ─── Session 5B — Kofi autonomous columns ──────────────────────── */
+  intent_signal: string | null;
+  confidence_score: number | null;
+  awa_warmup: boolean;
+  outreach_channel: LeadOutreachChannel | null;
+  why_now: string | null;
+  linkedin_url: string | null;
+  linkedin_message_id: string | null;
+  day4_sent_at: string | null;
+  day9_sent_at: string | null;
+  response_classification: LeadResponseClassification | null;
+  escalated_to_georges: boolean;
+  escalated_at: string | null;
 }
 
-export type LeadInsert = Omit<Lead, "id" | "created_at"> & {
+/**
+ * `LeadInsert` mirrors the database column nullability + defaults:
+ * required = `company`. Everything else is optional and matches the
+ * default value the column gets in Postgres (NULL or `false`).
+ */
+export interface LeadInsert {
+  company: string;
+  contact_name?: string | null;
+  contact_title?: string | null;
+  email?: string | null;
+  status?: LeadStatus;
+  last_contact_at?: string | null;
+  notes?: string | null;
   created_at?: string;
-};
+  intent_signal?: string | null;
+  confidence_score?: number | null;
+  awa_warmup?: boolean;
+  outreach_channel?: LeadOutreachChannel | null;
+  why_now?: string | null;
+  linkedin_url?: string | null;
+  linkedin_message_id?: string | null;
+  day4_sent_at?: string | null;
+  day9_sent_at?: string | null;
+  response_classification?: LeadResponseClassification | null;
+  escalated_to_georges?: boolean;
+  escalated_at?: string | null;
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Supabase: approvals                                                       */
@@ -353,6 +403,32 @@ export interface StatusRotationEvent {
   data: { trigger: "cron" | "manual" };
 }
 
+/* -------------------------------------------------------------------------- */
+/*  Session 5B — Kofi autonomous events                                       */
+/* -------------------------------------------------------------------------- */
+
+export interface KofiDailyProspectingEvent {
+  name: "tamtam/kofi.prospecting";
+  data: { trigger: "cron" | "manual" };
+}
+
+export interface KofiResponseMonitorEvent {
+  name: "tamtam/kofi.response-monitor";
+  data: { trigger: "cron" | "manual" };
+}
+
+export interface KofiEmailRepliedEvent {
+  name: "tamtam/kofi.email-replied";
+  data: {
+    /** Lead id when we can resolve it from the recipient address. */
+    lead_id: string | null;
+    from_email: string;
+    subject: string;
+    text: string;
+    received_at: string;
+  };
+}
+
 export type AppInngestEvent =
   | SocialMentionedEvent
   | GrowthMentionedEvent
@@ -371,4 +447,7 @@ export type AppInngestEvent =
   | TeamRandomMomentCronEvent
   | TeamTestReactionsEvent
   | TeamMemberJoinedEvent
-  | StatusRotationEvent;
+  | StatusRotationEvent
+  | KofiDailyProspectingEvent
+  | KofiResponseMonitorEvent
+  | KofiEmailRepliedEvent;

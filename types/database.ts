@@ -119,55 +119,121 @@ export type Database = {
           id: string;
           company: string;
           contact_name: string | null;
+          contact_title: string | null;
           email: string | null;
           status:
             | "new"
             | "researching"
+            | "researched"
             | "queued"
             | "contacted"
+            | "warm"
             | "replied"
+            | "cold"
+            | "rejected"
             | "won"
             | "lost"
             | "do_not_contact";
           last_contact_at: string | null;
           notes: string | null;
           created_at: string;
+          intent_signal: string | null;
+          confidence_score: number | null;
+          awa_warmup: boolean;
+          outreach_channel: "linkedin" | "email" | "both" | null;
+          why_now: string | null;
+          linkedin_url: string | null;
+          linkedin_message_id: string | null;
+          day4_sent_at: string | null;
+          day9_sent_at: string | null;
+          response_classification:
+            | "positive"
+            | "neutral"
+            | "negative"
+            | "referral"
+            | null;
+          escalated_to_georges: boolean;
+          escalated_at: string | null;
         };
         Insert: {
           id?: string;
           company: string;
           contact_name?: string | null;
+          contact_title?: string | null;
           email?: string | null;
           status?:
             | "new"
             | "researching"
+            | "researched"
             | "queued"
             | "contacted"
+            | "warm"
             | "replied"
+            | "cold"
+            | "rejected"
             | "won"
             | "lost"
             | "do_not_contact";
           last_contact_at?: string | null;
           notes?: string | null;
           created_at?: string;
+          intent_signal?: string | null;
+          confidence_score?: number | null;
+          awa_warmup?: boolean;
+          outreach_channel?: "linkedin" | "email" | "both" | null;
+          why_now?: string | null;
+          linkedin_url?: string | null;
+          linkedin_message_id?: string | null;
+          day4_sent_at?: string | null;
+          day9_sent_at?: string | null;
+          response_classification?:
+            | "positive"
+            | "neutral"
+            | "negative"
+            | "referral"
+            | null;
+          escalated_to_georges?: boolean;
+          escalated_at?: string | null;
         };
         Update: {
           id?: string;
           company?: string;
           contact_name?: string | null;
+          contact_title?: string | null;
           email?: string | null;
           status?:
             | "new"
             | "researching"
+            | "researched"
             | "queued"
             | "contacted"
+            | "warm"
             | "replied"
+            | "cold"
+            | "rejected"
             | "won"
             | "lost"
             | "do_not_contact";
           last_contact_at?: string | null;
           notes?: string | null;
           created_at?: string;
+          intent_signal?: string | null;
+          confidence_score?: number | null;
+          awa_warmup?: boolean;
+          outreach_channel?: "linkedin" | "email" | "both" | null;
+          why_now?: string | null;
+          linkedin_url?: string | null;
+          linkedin_message_id?: string | null;
+          day4_sent_at?: string | null;
+          day9_sent_at?: string | null;
+          response_classification?:
+            | "positive"
+            | "neutral"
+            | "negative"
+            | "referral"
+            | null;
+          escalated_to_georges?: boolean;
+          escalated_at?: string | null;
         };
         Relationships: [];
       };
