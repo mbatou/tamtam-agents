@@ -29,6 +29,9 @@ import { georgesCheckin } from "./georges-checkin";
 import { teamTestReactions } from "./team-test-reactions";
 import { statusRotation } from "./status-rotation";
 import { memberOnboarding } from "./member-onboarding";
+import { kofiDailyProspecting } from "./kofi-daily-prospecting";
+import { kofiResponseMonitor } from "./kofi-response-monitor";
+import { kofiEmailReplied } from "./kofi-email-replied";
 
 export const INNGEST_FUNCTIONS = [
   // Per-agent runners
@@ -54,4 +57,9 @@ export const INNGEST_FUNCTIONS = [
   // Three-app identity (Session 4 transformation)
   statusRotation,
   memberOnboarding,
+
+  // Kofi autonomous (Session 5B)
+  kofiDailyProspecting,
+  kofiResponseMonitor,
+  kofiEmailReplied,
 ] as const;
