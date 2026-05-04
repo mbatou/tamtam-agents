@@ -209,6 +209,86 @@ export async function updateAgentMessage(input: {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Bot identity (cached auth.test) + thread history                          */
+/* -------------------------------------------------------------------------- */
+
+export interface BotIdentity {
+  /** Bot user id, e.g. "U07XXXXXXXX". Compare against message.user. */
+  user_id: string;
+  /** Bot id, e.g. "B07XXXXXXXX". Compare against message.bot_id. */
+  bot_id: string;
+}
+
+const botIdentityCache = new Map<AgentName, BotIdentity>();
+
+/**
+ * Returns the agent's own Slack user_id + bot_id, used to detect
+ * "did this agent post in this thread?" without relying on string
+ * matching. Cached forever in the process — these don't change
+ * once the app is installed.
+ */
+export async function getBotIdentity(agent: AgentName): Promise<BotIdentity> {
+  const cached = botIdentityCache.get(agent);
+  if (cached) return cached;
+
+  const res = await getClientFor(agent).auth.test();
+  if (!res.ok || !res.user_id || !res.bot_id) {
+    throw new Error(
+      `[slack] auth.test failed for ${agent}: ${res.error ?? "unknown"}`,
+    );
+  }
+  const identity: BotIdentity = {
+    user_id: res.user_id,
+    bot_id: res.bot_id,
+  };
+  botIdentityCache.set(agent, identity);
+  return identity;
+}
+
+export interface ThreadMessage {
+  user?: string;
+  bot_id?: string;
+  text?: string;
+  ts: string;
+  thread_ts?: string;
+}
+
+/**
+ * Fetch a thread's full reply chain via `conversations.replies`.
+ *
+ * Required scope on the agent's app: `channels:history` for public
+ * channels, `groups:history` for private. The bot must also be a
+ * member of the channel.
+ *
+ * Returns up to `limit` messages (default 50), parent first then
+ * replies in chronological order.
+ */
+export async function getThreadMessages(input: {
+  agent: AgentName;
+  channel: string;
+  thread_ts: string;
+  limit?: number;
+}): Promise<ThreadMessage[]> {
+  const res = await getClientFor(input.agent).conversations.replies({
+    channel: input.channel,
+    ts: input.thread_ts,
+    limit: input.limit ?? 50,
+  });
+  if (!res.ok || !res.messages) {
+    throw new Error(
+      `[slack] conversations.replies failed: ${res.error ?? "unknown"}`,
+    );
+  }
+  return res.messages.map((m) => ({
+    user: m.user,
+    bot_id: m.bot_id,
+    text: m.text,
+    ts: m.ts ?? "",
+    thread_ts: m.thread_ts,
+  }));
+}
+
+/* -------------------------------------------------------------------------- */
 /*  DMs                                                                       */
 /* -------------------------------------------------------------------------- */
 

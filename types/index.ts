@@ -488,6 +488,21 @@ export interface KofiEmailRepliedEvent {
   };
 }
 
+export interface GrowthThreadReplyEvent {
+  name: "tamtam/growth.thread-reply";
+  data: {
+    /** The thread root ts — same as the first message's ts. */
+    thread_ts: string;
+    channel: string;
+    user: string;
+    text: string;
+    /** The new reply's own ts (for dedup + Inngest event id). */
+    ts: string;
+    /** Slack's event_id; used as the Inngest dedup id. */
+    slack_event_id: string;
+  };
+}
+
 export type AppInngestEvent =
   | SocialMentionedEvent
   | GrowthMentionedEvent
@@ -509,4 +524,5 @@ export type AppInngestEvent =
   | StatusRotationEvent
   | KofiDailyProspectingEvent
   | KofiResponseMonitorEvent
-  | KofiEmailRepliedEvent;
+  | KofiEmailRepliedEvent
+  | GrowthThreadReplyEvent;

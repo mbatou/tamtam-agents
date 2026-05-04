@@ -161,12 +161,17 @@ identical configuration:
 chat:write
 chat:write.public
 app_mentions:read
-channels:history
+channels:history       ← also needed by Kofi's thread-continuity flow
+                          (conversations.replies on public channels)
 im:write
 im:history
 users.profile:write    ← needed for status rotation + avatar script
 users:read
 ```
+
+If `#tamtam-growth` is a **private** channel instead of public,
+also add `groups:history` to the Kofi app — `conversations.replies`
+needs the per-channel-type scope.
 
 **Event subscriptions** (`Event Subscriptions → Subscribe to bot
 events`):
