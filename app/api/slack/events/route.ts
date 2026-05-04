@@ -332,22 +332,15 @@ async function dispatchSlackEvent(payload: SlackEventCallback): Promise<void> {
   }
 
   /* ────────────────────────────────────────────────────────────────────── */
-  /*  Branch B: agent channels — app_mention routes by channel              */
+  /*  Branch B: agent channels                                              */
+  /*    - app_mention always routes via tamtam/<agent>.mentioned            */
+  /*    - In #tamtam-growth: a `message` event with thread_ts from         */
+  /*      Georges (no @-mention in the text) routes via                     */
+  /*      tamtam/growth.thread-reply so Kofi can follow up on threads      */
+  /*      he started. Other agents' channels don't get this yet.            */
   /* ────────────────────────────────────────────────────────────────────── */
 
-  if (event.type !== "app_mention") {
-    console.log("[slack/events] ignored event type:", event.type);
-    return;
-  }
-
   const agent = detectAgentFromChannel(channelId);
-  console.log(
-    "[slack/events] routing by channel:",
-    channelId,
-    "→ agent:",
-    agent,
-  );
-
   if (!agent) {
     console.log(
       "[slack/events] no agent matched channel — channel was:",
@@ -359,6 +352,54 @@ async function dispatchSlackEvent(payload: SlackEventCallback): Promise<void> {
     );
     return;
   }
+
+  // Thread-reply path (Kofi only, for now). Conditions:
+  //   - event is a `message` (not app_mention; that's handled below)
+  //   - has thread_ts (it IS a reply in a thread)
+  //   - channel is #tamtam-growth
+  //   - user is Georges (we know the id)
+  //   - text doesn't contain `<@…>` — if it does, the parallel
+  //     app_mention event will handle it; emitting both would
+  //     double-trigger.
+  if (
+    agent === "growth" &&
+    event.type === "message" &&
+    event.thread_ts &&
+    env.SLACK_GEORGES_USER_ID &&
+    event.user === env.SLACK_GEORGES_USER_ID &&
+    !text.includes("<@")
+  ) {
+    console.log(
+      "[slack/events] thread-reply detected from Georges in #tamtam-growth, thread_ts=",
+      event.thread_ts,
+    );
+    await inngest.send({
+      id: `growth-thread-reply-${eventId}`,
+      name: "tamtam/growth.thread-reply",
+      data: {
+        thread_ts: event.thread_ts,
+        channel: channelId,
+        user: event.user,
+        text,
+        ts: event.ts ?? "",
+        slack_event_id: eventId,
+      },
+    });
+    return;
+  }
+
+  // Everything else in agent channels must be an app_mention.
+  if (event.type !== "app_mention") {
+    console.log("[slack/events] ignored event type:", event.type);
+    return;
+  }
+
+  console.log(
+    "[slack/events] routing by channel:",
+    channelId,
+    "→ agent:",
+    agent,
+  );
 
   // app_mentions get the same id-dedup treatment — Slack retries
   // these too.

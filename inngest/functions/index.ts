@@ -32,6 +32,7 @@ import { memberOnboarding } from "./member-onboarding";
 import { kofiDailyProspecting } from "./kofi-daily-prospecting";
 import { kofiResponseMonitor } from "./kofi-response-monitor";
 import { kofiEmailReplied } from "./kofi-email-replied";
+import { kofiThreadReply } from "./kofi-thread-reply";
 
 export const INNGEST_FUNCTIONS = [
   // Per-agent runners
@@ -58,8 +59,9 @@ export const INNGEST_FUNCTIONS = [
   statusRotation,
   memberOnboarding,
 
-  // Kofi autonomous (Session 5B)
+  // Kofi autonomous (Session 5B–5D)
   kofiDailyProspecting,
   kofiResponseMonitor,
   kofiEmailReplied,
+  kofiThreadReply,
 ] as const;
