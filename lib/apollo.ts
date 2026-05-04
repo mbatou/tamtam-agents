@@ -27,10 +27,27 @@ const APOLLO_MONTHLY_HARD_CEILING = 70;
 const APOLLO_BASE_URL = "https://api.apollo.io/v1";
 
 export interface ApolloPersonResult {
+  /** Apollo's person id; pass to revealPerson if email is missing. */
+  id: string | null;
   name: string | null;
   title: string | null;
   email: string | null;
   linkedin_url: string | null;
+}
+
+/**
+ * Apollo's `mixed_people/search` sometimes returns obfuscated
+ * emails ("email_not_unlocked@domain.com") on the free tier.
+ * Use this to detect those before relying on the value.
+ */
+export function looksLikeRealEmail(email: string | null): boolean {
+  if (!email) return false;
+  const lower = email.toLowerCase();
+  if (lower.includes("email_not_unlocked")) return false;
+  if (lower.includes("not_unlocked")) return false;
+  if (lower.startsWith("**")) return false;
+  // basic shape check
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 export interface ApolloCompanyResult {
@@ -80,11 +97,22 @@ export async function getCreditsRemaining(): Promise<number> {
 
 interface ApolloPeopleSearchResponse {
   people?: Array<{
+    id?: string;
     name?: string;
     title?: string;
     email?: string | null;
     linkedin_url?: string;
   }>;
+}
+
+interface ApolloPeopleMatchResponse {
+  person?: {
+    id?: string;
+    name?: string;
+    title?: string;
+    email?: string | null;
+    linkedin_url?: string;
+  };
 }
 
 interface ApolloOrgEnrichResponse {
@@ -117,12 +145,26 @@ export async function searchPeople(input: {
 }): Promise<ApolloPersonResult | null> {
   const apiKey = env.APOLLO_API_KEY;
   if (!apiKey) {
-    console.log("[apollo] APOLLO_API_KEY not set — skip");
+    console.log(
+      "[apollo] APOLLO_API_KEY not set — enrichment skipped for:",
+      input.company,
+    );
     return null;
   }
+  console.log(
+    "[apollo] API key present — calling searchPeople for:",
+    input.company,
+  );
 
   const used = await getMonthlyCreditsUsed();
+  console.log(
+    `[apollo] credits used this month: ${used}/${APOLLO_MONTHLY_HARD_CEILING}`,
+  );
   if (used >= APOLLO_MONTHLY_HARD_CEILING) {
+    console.log(
+      "[apollo] monthly ceiling reached — skipping",
+      input.company,
+    );
     await logAgentAction({
       agent: "growth",
       action: "apollo.skipped.ceiling",
@@ -153,14 +195,22 @@ export async function searchPeople(input: {
     });
 
     if (!res.ok) {
+      const bodyText = await res.text().catch(() => "(unreadable)");
       console.warn(
-        `[apollo] searchPeople HTTP ${res.status} for ${input.company}`,
+        `[apollo] searchPeople HTTP ${res.status} for ${input.company}: ${bodyText.slice(0, 240)}`,
       );
       return null;
     }
 
     const data = (await res.json()) as ApolloPeopleSearchResponse;
     const person = data.people?.[0];
+
+    console.log(
+      `[apollo] searchPeople response for ${input.company} —`,
+      person
+        ? `match: name=${person.name ?? "?"} title=${person.title ?? "?"} email=${person.email ?? "(none)"}`
+        : "no match",
+    );
 
     // Log the credit usage even on no-match (Apollo charged us
     // for the search either way).
@@ -171,6 +221,7 @@ export async function searchPeople(input: {
         company: input.company,
         endpoint: "mixed_people/search",
         match_found: !!person,
+        email_present: looksLikeRealEmail(person?.email ?? null),
         credits_used_this_month: used + 1,
         credits_remaining: APOLLO_MONTHLY_HARD_CEILING - used - 1,
       },
@@ -180,6 +231,7 @@ export async function searchPeople(input: {
     if (!person) return null;
 
     return {
+      id: person.id ?? null,
       name: person.name ?? null,
       title: person.title ?? null,
       email: person.email ?? null,
@@ -188,6 +240,109 @@ export async function searchPeople(input: {
   } catch (err) {
     console.warn(
       `[apollo] searchPeople error for ${input.company}: ` +
+        (err instanceof Error ? err.message : String(err)),
+    );
+    return null;
+  }
+}
+
+/**
+ * Reveal a person's email via Apollo's `/people/match` endpoint.
+ * Used as a follow-up when `searchPeople` returned a match without
+ * a usable email. Costs 1 additional credit.
+ *
+ * Apollo's match endpoint accepts an `id` (or a name + organisation
+ * + domain combination); we pass `id` when search gave us one,
+ * otherwise we fall back to name + organisation. Returns the same
+ * shape as searchPeople.
+ *
+ * Only call this when `looksLikeRealEmail(searchResult.email)` is
+ * false — otherwise you're burning a credit for no reason.
+ */
+export async function revealPerson(input: {
+  personId?: string | null;
+  name?: string | null;
+  organizationName?: string | null;
+  domain?: string | null;
+}): Promise<ApolloPersonResult | null> {
+  const apiKey = env.APOLLO_API_KEY;
+  if (!apiKey) {
+    console.log("[apollo] APOLLO_API_KEY not set — revealPerson skipped");
+    return null;
+  }
+
+  const used = await getMonthlyCreditsUsed();
+  if (used >= APOLLO_MONTHLY_HARD_CEILING) {
+    console.log("[apollo] monthly ceiling reached — revealPerson skipped");
+    return null;
+  }
+
+  const body: Record<string, unknown> = {
+    reveal_personal_emails: false,
+  };
+  if (input.personId) body.id = input.personId;
+  if (input.name) body.name = input.name;
+  if (input.organizationName) body.organization_name = input.organizationName;
+  if (input.domain) body.domain = input.domain;
+
+  console.log(
+    "[apollo] revealPerson calling /people/match with:",
+    JSON.stringify(body),
+  );
+
+  try {
+    const res = await fetch(`${APOLLO_BASE_URL}/people/match`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Api-Key": apiKey,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => "(unreadable)");
+      console.warn(
+        `[apollo] revealPerson HTTP ${res.status}: ${bodyText.slice(0, 240)}`,
+      );
+      return null;
+    }
+
+    const data = (await res.json()) as ApolloPeopleMatchResponse;
+    const person = data.person;
+
+    console.log(
+      "[apollo] revealPerson response —",
+      person
+        ? `name=${person.name ?? "?"} email=${person.email ?? "(still none)"}`
+        : "no person on response",
+    );
+
+    await logAgentAction({
+      agent: "growth",
+      action: "apollo.credit_used",
+      metadata: {
+        endpoint: "people/match",
+        match_found: !!person,
+        email_revealed: looksLikeRealEmail(person?.email ?? null),
+        credits_used_this_month: used + 1,
+        credits_remaining: APOLLO_MONTHLY_HARD_CEILING - used - 1,
+      },
+      status: "completed",
+    }).catch(() => undefined);
+
+    if (!person) return null;
+
+    return {
+      id: person.id ?? null,
+      name: person.name ?? null,
+      title: person.title ?? null,
+      email: person.email ?? null,
+      linkedin_url: person.linkedin_url ?? null,
+    };
+  } catch (err) {
+    console.warn(
+      "[apollo] revealPerson error: " +
         (err instanceof Error ? err.message : String(err)),
     );
     return null;

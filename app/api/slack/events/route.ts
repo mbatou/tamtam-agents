@@ -184,6 +184,26 @@ async function dispatchSlackEvent(payload: SlackEventCallback): Promise<void> {
     event.channel,
   );
 
+  // Subtype guard (FIRST — before bot guard). Slack fires events
+  // with a `subtype` field for non-content notifications:
+  //   message_deleted    — message was removed
+  //   message_changed    — message was edited
+  //   bot_message        — message posted by a bot via webhook
+  //   file_share / channel_join / channel_leave / etc.
+  // We never act on these. Exception: `app_mention` is its own
+  // event type and never carries a subtype in practice — kept
+  // through the gate explicitly in case Slack ever bolts a
+  // subtype onto a workflow-driven mention.
+  if (event.subtype && event.type !== "app_mention") {
+    console.log(
+      "[slack/events] ignored — subtype:",
+      event.subtype,
+      "type:",
+      event.type,
+    );
+    return;
+  }
+
   // Strict bot guard. With three Slack apps posting in shared
   // channels, a missed bot_id is a loop hazard.
   if (event.bot_id) {
@@ -191,11 +211,6 @@ async function dispatchSlackEvent(payload: SlackEventCallback): Promise<void> {
       "[slack/events] ignored bot message — bot_id=",
       event.bot_id,
     );
-    return;
-  }
-
-  if (event.subtype) {
-    console.log("[slack/events] ignored — subtype:", event.subtype);
     return;
   }
 
