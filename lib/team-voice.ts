@@ -13,6 +13,7 @@ import { generateText } from "@/lib/anthropic";
 import { logAgentAction } from "@/lib/supabase";
 import {
   PERSONAS,
+  postAsAgent,
   respondWithTyping,
   teamChannelOrNull,
 } from "@/lib/slack";
@@ -52,6 +53,13 @@ export interface SpeakAsInput {
    * because a probability roll said so.
    */
   skipMarker?: string;
+  /**
+   * Skip the 1.5–2.5s "typing" pause and post immediately. Use for
+   * tool-driven acknowledgments where Georges expects an instant
+   * confirmation in #tamtam-growth — not for cold-outreach replies
+   * where the human-feel delay is part of the UX.
+   */
+  instant?: boolean;
 }
 
 export interface SpeakAsResult {
@@ -134,12 +142,22 @@ export async function speakAs(input: SpeakAsInput): Promise<SpeakAsResult> {
     return { posted: false, reason: "skipped_by_agent" };
   }
 
-  const post = await respondWithTyping({
-    agent: input.agent,
-    channel,
-    threadTs: input.threadTs,
-    text,
-  });
+  // Tool-driven acks (instant) post immediately. Conversation-style
+  // chime-ins keep the typing pause so they read like someone
+  // composing a thought.
+  const post = input.instant
+    ? await postAsAgent({
+        agent: input.agent,
+        channel,
+        threadTs: input.threadTs,
+        text,
+      })
+    : await respondWithTyping({
+        agent: input.agent,
+        channel,
+        threadTs: input.threadTs,
+        text,
+      });
 
   await logAgentAction({
     agent: input.agent,
