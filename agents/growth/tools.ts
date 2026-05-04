@@ -22,6 +22,7 @@ import {
 } from "@/lib/slack";
 import { sendOutreachEmail } from "@/lib/resend";
 import { inngest } from "@/lib/inngest";
+import { speakAs } from "@/lib/team-voice";
 import OutreachEmail from "@/emails/outreach-template";
 import { createElement } from "react";
 import type {
@@ -423,6 +424,25 @@ export function growthTools(ctx: ToolCtx = {}): ToolDefinition[] {
           noteAppend: i.note,
         });
         if (!updated) {
+          // No match: still ack so Georges isn't left wondering.
+          await speakAs({
+            agent: "growth",
+            channel: defaultChannelFor("growth"),
+            instant: true,
+            source: "tool.ack.update_lead_status.no_match",
+            maxTokens: 100,
+            brief:
+              `Georges asked you to update a lead by partial name ` +
+              `but no match was found in the CRM:\n` +
+              `  Query: "${i.company_query}"\n` +
+              `  Wanted status: ${i.status}\n\n` +
+              `Acknowledge in YOUR voice. Under 25 words. Ask for ` +
+              `the exact company name or another identifier. Don't ` +
+              `say "no match" or "not found" — sound like a teammate ` +
+              `who looked, didn't see it, and wants the right name. ` +
+              `Skip greetings, skip "I" at the start, skip " ` +
+              `"successfully" / "processed" / "updated".`,
+          }).catch(() => undefined);
           return {
             ok: false,
             reason: "no_match",
@@ -440,6 +460,47 @@ export function growthTools(ctx: ToolCtx = {}): ToolDefinition[] {
           },
           status: "completed",
         });
+
+        // Immediate, contextual ack in #tamtam-growth.
+        await speakAs({
+          agent: "growth",
+          channel: defaultChannelFor("growth"),
+          instant: true,
+          source: `tool.ack.update_lead_status.${i.status}`,
+          maxTokens: 130,
+          brief:
+            `You just updated a lead's status. Acknowledge in ` +
+            `#tamtam-growth in YOUR voice. ONE sentence ack + ` +
+            `ONE sentence with your strategic read on what this ` +
+            `means. Under 30 words total. Don't say "successfully" ` +
+            `/ "processed" / "updated" / "database". Sound like a ` +
+            `teammate, not a system notification.\n\n` +
+            `Lead just updated:\n` +
+            `  Company: ${updated.company}\n` +
+            `  Contact: ${updated.contact_name ?? "unknown"}\n` +
+            `  Title: ${updated.contact_title ?? "unknown"}\n` +
+            `  New status: ${i.status}\n` +
+            (i.classification
+              ? `  Classification: ${i.classification}\n`
+              : "") +
+            `  Intent signal: ${updated.intent_signal ?? "none"}\n` +
+            `  Why now (research): ${updated.why_now ?? "none"}\n` +
+            `  Confidence score: ${updated.confidence_score ?? "—"}\n` +
+            `  Awa-warmed: ${updated.awa_warmup ? "yes" : "no"}\n\n` +
+            `Status reaction guidance:\n` +
+            `  rejected → archived; brief reason if you can read it ` +
+            `from notes; quickly move on.\n` +
+            `  warm → you'll prioritise on the next follow-up cycle.\n` +
+            `  hot → 🔥 Georges should know; suggest his attention.\n` +
+            `  converted → ✅ celebrate briefly; flag Rama.\n` +
+            `  paused → won't touch them until told otherwise.\n` +
+            `  contacted → fine, back into the cadence.\n` +
+            `  cold → archived this round; can revisit next quarter.\n\n` +
+            `If you have a specific take based on the lead's profile ` +
+            `(industry, signal, contact title) that genuinely fits — ` +
+            `add it. Don't pad with filler.`,
+        }).catch(() => undefined);
+
         return {
           ok: true,
           lead_id: updated.id,
@@ -498,6 +559,31 @@ export function growthTools(ctx: ToolCtx = {}): ToolDefinition[] {
           metadata: { lead_id: lead.id, company: lead.company },
           status: "completed",
         });
+
+        await speakAs({
+          agent: "growth",
+          channel: defaultChannelFor("growth"),
+          instant: true,
+          source: "tool.ack.add_manual_lead",
+          maxTokens: 130,
+          brief:
+            `Georges just supplied a new lead by hand. Acknowledge ` +
+            `in #tamtam-growth in YOUR voice. ONE sentence ack ` +
+            `naming the contact + company. ONE sentence about ` +
+            `timing — typically you'll include them in tomorrow ` +
+            `morning's prospecting run (08:00 WAT). If something ` +
+            `about the brand sparks a thought (industry, recent ` +
+            `Awa coverage, ICP fit), add it briefly. Under 35 ` +
+            `words. Don't say "added to the database" / ` +
+            `"successfully" / "processed".\n\n` +
+            `New lead just created:\n` +
+            `  Company: ${lead.company}\n` +
+            `  Contact: ${lead.contact_name ?? "(not provided)"}\n` +
+            `  Title: ${lead.contact_title ?? "(not provided)"}\n` +
+            `  Email: ${lead.email ?? "(no email yet)"}\n` +
+            `  Source: manual_georges`,
+        }).catch(() => undefined);
+
         return { ok: true, lead_id: lead.id, company: lead.company };
       },
     },
@@ -522,9 +608,41 @@ export function growthTools(ctx: ToolCtx = {}): ToolDefinition[] {
           status: "paused",
           noteAppend: `Paused${i.reason ? ` — ${i.reason}` : ""}`,
         });
-        return updated
-          ? { ok: true, company: updated.company }
-          : { ok: false, reason: "no_match" };
+        if (!updated) {
+          await speakAs({
+            agent: "growth",
+            channel: defaultChannelFor("growth"),
+            instant: true,
+            source: "tool.ack.pause_lead.no_match",
+            maxTokens: 80,
+            brief:
+              `Georges asked you to pause a lead but no CRM match ` +
+              `was found:\n  Query: "${i.company_query}"\n` +
+              `  Reason: ${i.reason ?? "(none given)"}\n\n` +
+              `Acknowledge in YOUR voice. Under 25 words. Ask for ` +
+              `the exact name. Don't say "no match found" / ` +
+              `"successfully".`,
+          }).catch(() => undefined);
+          return { ok: false, reason: "no_match" };
+        }
+
+        await speakAs({
+          agent: "growth",
+          channel: defaultChannelFor("growth"),
+          instant: true,
+          source: "tool.ack.pause_lead",
+          maxTokens: 100,
+          brief:
+            `You just paused outreach to ${updated.company}. ` +
+            `Acknowledge in YOUR voice. ONE short sentence. Under ` +
+            `20 words. Confirm you won't contact them until told ` +
+            `otherwise. If a reason was given (${
+              i.reason ?? "(none)"
+            }), reference it briefly. Don't say "successfully" / ` +
+            `"processed".`,
+        }).catch(() => undefined);
+
+        return { ok: true, company: updated.company };
       },
     },
 
@@ -532,12 +650,13 @@ export function growthTools(ctx: ToolCtx = {}): ToolDefinition[] {
       name: "get_pipeline_summary",
       description:
         "Return a snapshot of the lead pipeline grouped by status, " +
-        "plus the monthly Apollo credit counter. Use this to answer " +
-        "'what's the pipeline?' / 'where are we?' questions in Slack.",
+        "plus the monthly Apollo credit counter, AND post the " +
+        "pipeline snapshot to #tamtam-growth as Kofi. Use this to " +
+        "answer 'what's the pipeline?' / 'where are we?' questions.",
       input_schema: { type: "object", properties: {} },
       handler: async () => {
         const snap = await getPipelineSnapshot();
-        return {
+        const summary = {
           hot: snap.hot.map((l) => l.company),
           warm: snap.warm.map((l) => l.company),
           contacted: snap.contacted.map((l) => l.company),
@@ -549,6 +668,41 @@ export function growthTools(ctx: ToolCtx = {}): ToolDefinition[] {
             remaining: snap.apollo_credits_remaining,
           },
         };
+
+        // Post the snapshot directly in Kofi's voice — Georges
+        // gets the answer immediately, not just data the agent
+        // loop has to format.
+        await speakAs({
+          agent: "growth",
+          channel: defaultChannelFor("growth"),
+          instant: true,
+          source: "tool.ack.pipeline_summary",
+          maxTokens: 400,
+          brief:
+            `Georges asked for the pipeline snapshot. Post it in ` +
+            `#tamtam-growth in YOUR voice. Use this exact format ` +
+            `for the body, then close with ONE observation or ONE ` +
+            `question. Don't say "summary" / "report" / ` +
+            `"generated":\n\n` +
+            `Format:\n` +
+            `  Here's where we stand Georges:\n\n` +
+            `  🔥 Hot (${summary.hot.length}): ${summary.hot.join(", ") || "—"}\n` +
+            `  🌡️ Warm (${summary.warm.length}): ${summary.warm.join(", ") || "—"}\n` +
+            `  📧 Contacted (${summary.contacted.length}): ${
+              summary.contacted.slice(0, 6).join(", ") || "—"
+            }${summary.contacted.length > 6 ? ` (+${summary.contacted.length - 6} more)` : ""}\n` +
+            `  ⏸️ Paused (${summary.paused.length}): ${summary.paused.join(", ") || "—"}\n` +
+            `  ✅ Converted (${summary.converted.length}): ${summary.converted.join(", ") || "—"}\n` +
+            `  ❄️ Cold (${summary.cold_count}): archived\n` +
+            `  Apollo: ${summary.apollo.used}/${summary.apollo.used + summary.apollo.remaining} credits used this month\n\n` +
+            `Then close with: a) one observation about the ` +
+            `pipeline shape (light? heavy? warm-skewed?) OR b) ` +
+            `one question for Georges (specific brand to target? ` +
+            `industry to push?). Pick whichever fits — don't do ` +
+            `both. Under 30 words on the close.`,
+        }).catch(() => undefined);
+
+        return summary;
       },
     },
 
