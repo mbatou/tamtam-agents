@@ -175,6 +175,17 @@ export const env = {
     return optional("APOLLO_API_KEY");
   },
 
+  /**
+   * Optional. Single secret guarding the private ops dashboard at
+   * /dashboard/[token]. When unset, the dashboard returns 404 for
+   * every request (the page never renders, the API routes never
+   * authorise). Treat as a credential — anyone with the URL has
+   * full read + trigger access until you rotate.
+   */
+  get DASHBOARD_SECRET(): string | undefined {
+    return optional("DASHBOARD_SECRET");
+  },
+
   // ─── App ────────────────────────────────────────────────────────────
   get APP_URL(): string {
     return optional("APP_URL") ?? "http://localhost:3000";

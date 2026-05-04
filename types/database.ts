@@ -303,6 +303,60 @@ export type Database = {
         };
         Relationships: [];
       };
+      agent_settings: {
+        Row: {
+          id: string;
+          agent: "social" | "growth" | "coo";
+          focus_this_week: string | null;
+          tone: string;
+          post_frequency: string;
+          daily_lead_target: number;
+          apollo_monthly_budget: number;
+          icp_focus: string;
+          outreach_day4: number;
+          outreach_day9: number;
+          standup_time: string;
+          brief_frequency: string;
+          babacar_reminder: boolean;
+          is_active: boolean;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          agent: "social" | "growth" | "coo";
+          focus_this_week?: string | null;
+          tone?: string;
+          post_frequency?: string;
+          daily_lead_target?: number;
+          apollo_monthly_budget?: number;
+          icp_focus?: string;
+          outreach_day4?: number;
+          outreach_day9?: number;
+          standup_time?: string;
+          brief_frequency?: string;
+          babacar_reminder?: boolean;
+          is_active?: boolean;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          agent?: "social" | "growth" | "coo";
+          focus_this_week?: string | null;
+          tone?: string;
+          post_frequency?: string;
+          daily_lead_target?: number;
+          apollo_monthly_budget?: number;
+          icp_focus?: string;
+          outreach_day4?: number;
+          outreach_day9?: number;
+          standup_time?: string;
+          brief_frequency?: string;
+          babacar_reminder?: boolean;
+          is_active?: boolean;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       email_messages: {
         Row: {
           id: string;

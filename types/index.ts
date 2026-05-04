@@ -246,6 +246,32 @@ export type ApprovalInsert = Omit<Approval, "id" | "created_at"> & {
 };
 
 /* -------------------------------------------------------------------------- */
+/*  Supabase: agent_settings (Session 6 — dashboard)                          */
+/* -------------------------------------------------------------------------- */
+
+export interface AgentSettings {
+  id: string;
+  agent: AgentName;
+  focus_this_week: string | null;
+  tone: string;
+  post_frequency: string;
+  daily_lead_target: number;
+  apollo_monthly_budget: number;
+  icp_focus: string;
+  outreach_day4: number;
+  outreach_day9: number;
+  standup_time: string;
+  brief_frequency: string;
+  babacar_reminder: boolean;
+  is_active: boolean;
+  updated_at: string;
+}
+
+export type AgentSettingsUpdate = Partial<
+  Omit<AgentSettings, "id" | "agent" | "updated_at">
+>;
+
+/* -------------------------------------------------------------------------- */
 /*  Supabase Database type — re-exported from /types/database.ts              */
 /* -------------------------------------------------------------------------- */
 

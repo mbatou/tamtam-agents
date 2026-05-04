@@ -229,6 +229,60 @@ list is the const `REQUIRED_ENV_VARS`. Optional variables
 `SLACK_GEORGES_USER_ID`) are not in that list and have sensible
 defaults or graceful fallbacks.
 
+### Private ops dashboard (Session 6)
+
+Mission-control UI at `/dashboard/[DASHBOARD_SECRET]`. No login,
+no session — the URL itself is the credential. On mismatch (or
+when the secret is unset), the page returns a real 404 and the
+eight `/api/dashboard/*` routes do the same.
+
+**Generate the secret:**
+
+```bash
+openssl rand -hex 32
+```
+
+Set `DASHBOARD_SECRET` on Vercel (Production / Preview / Development).
+Visit `https://<your-vercel-url>/dashboard/<secret>` to access.
+
+**Sections:**
+
+- **Feed** — last 100 `agent_logs` rows with per-agent filter,
+  expandable metadata, 30-second auto-refresh, "● Live" indicator.
+- **Pipeline** — leads table with stats bar (counts + Apollo credits),
+  inline status dropdowns, status / source / search filters,
+  "+ Add lead" modal, hover-reveal pause/delete actions.
+- **Content** — scheduled vs published tabs with approve / reject
+  / view actions; image-prompt and caption preview modal.
+- **Settings** — three agent cards (Awa / Kofi / Rama) with
+  editable focus, tone, frequency, lead target, Apollo budget,
+  ICP, follow-up cadence, standup time, brief frequency, Babacar
+  reminder toggle. Each card has trigger buttons that fire the
+  matching Inngest event with id-dedup.
+
+**Trigger map** (`/api/dashboard/trigger`):
+
+| Action | Fires |
+|---|---|
+| `growth + prospecting` | `tamtam/kofi.prospecting` |
+| `coo + standup`        | `tamtam/team.standup` |
+| `coo + brief`          | `tamtam/coo.tick` (cron-mirror, no fake Slack context) |
+| `coo + wrapup`         | `tamtam/team.friday-wrapup` |
+| `social + post`        | `tamtam/social.run` (cron-mirror, no fake Slack context) |
+
+**Security caveats** (read before sharing the URL):
+
+- The token travels in URL paths and query strings → it lands in
+  Vercel access logs, browser history, referrer headers (when
+  navigating away to external links), screenshots. Treat as a
+  credential. Rotate on suspicion of leak.
+- Routes use timing-safe HMAC-style comparison (`crypto.timingSafeEqual`)
+  to prevent token enumeration via response-time analysis.
+- All 404s are real 404s — the page's existence isn't leaked.
+- Lead PATCH whitelists the patchable fields (no writes to
+  `confidence_score`, `escalated_to_georges`, etc. via the
+  dashboard).
+
 ### Database migrations
 
 `supabase/migrations/` holds idempotent SQL migrations that extend
@@ -250,6 +304,11 @@ Current migrations:
   confidence score, follow-up timestamps, response classification,
   escalation flag, etc.) plus the indexes the day-4/day-9 cadence
   queries depend on.
+- `0002_email_messages.sql` — Session 5C outbound-email audit
+  table + extends `leads.status` to include `hot/converted/paused`.
+- `0003_agent_settings.sql` — Session 6 dashboard settings table
+  (one row per agent, default rows seeded). Auto-bumps
+  `updated_at` via trigger on every UPDATE.
 
 ### Pipeline admin from Slack (Session 5C)
 
