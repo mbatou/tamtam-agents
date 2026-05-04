@@ -128,9 +128,12 @@ export type Database = {
             | "queued"
             | "contacted"
             | "warm"
+            | "hot"
             | "replied"
             | "cold"
             | "rejected"
+            | "paused"
+            | "converted"
             | "won"
             | "lost"
             | "do_not_contact";
@@ -168,9 +171,12 @@ export type Database = {
             | "queued"
             | "contacted"
             | "warm"
+            | "hot"
             | "replied"
             | "cold"
             | "rejected"
+            | "paused"
+            | "converted"
             | "won"
             | "lost"
             | "do_not_contact";
@@ -208,9 +214,12 @@ export type Database = {
             | "queued"
             | "contacted"
             | "warm"
+            | "hot"
             | "replied"
             | "cold"
             | "rejected"
+            | "paused"
+            | "converted"
             | "won"
             | "lost"
             | "do_not_contact";
@@ -291,6 +300,39 @@ export type Database = {
             | "edited"
             | "expired";
           created_at?: string;
+        };
+        Relationships: [];
+      };
+      email_messages: {
+        Row: {
+          id: string;
+          lead_id: string | null;
+          direction: "outbound";
+          subject: string;
+          body: string;
+          resend_message_id: string | null;
+          email_type: "day1" | "day4" | "day9" | "manual";
+          sent_at: string;
+        };
+        Insert: {
+          id?: string;
+          lead_id?: string | null;
+          direction: "outbound";
+          subject: string;
+          body: string;
+          resend_message_id?: string | null;
+          email_type: "day1" | "day4" | "day9" | "manual";
+          sent_at?: string;
+        };
+        Update: {
+          id?: string;
+          lead_id?: string | null;
+          direction?: "outbound";
+          subject?: string;
+          body?: string;
+          resend_message_id?: string | null;
+          email_type?: "day1" | "day4" | "day9" | "manual";
+          sent_at?: string;
         };
         Relationships: [];
       };

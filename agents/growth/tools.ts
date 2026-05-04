@@ -8,8 +8,10 @@ import {
   attachSlackTsToApproval,
   createApproval,
   getLead,
+  getPipelineSnapshot,
   logAgentAction,
   setLeadStatus,
+  updateLeadStatusByCompany,
   upsertLead,
 } from "@/lib/supabase";
 import {
@@ -355,6 +357,198 @@ export function growthTools(ctx: ToolCtx = {}): ToolDefinition[] {
           });
           throw err;
         }
+      },
+    },
+
+    {
+      name: "update_lead_status_by_company",
+      description:
+        "Find a lead by partial company name (case-insensitive) and " +
+        "update its status. Use this when Georges tells you in Slack " +
+        "things like 'Wave Sénégal replied, they're interested' " +
+        "(status='warm', classification='positive') or 'mark Jumia " +
+        "as dead' (status='rejected'). Append a short note explaining " +
+        "the change so the audit trail stays useful.",
+      input_schema: {
+        type: "object",
+        properties: {
+          company_query: {
+            type: "string",
+            description:
+              "A partial company name. Case-insensitive ILIKE match.",
+          },
+          status: {
+            type: "string",
+            enum: [
+              "researched",
+              "contacted",
+              "warm",
+              "hot",
+              "paused",
+              "rejected",
+              "converted",
+              "cold",
+            ],
+          },
+          classification: {
+            type: "string",
+            enum: ["positive", "neutral", "negative", "referral"],
+            description:
+              "Optional. Set when the status change reflects a known " +
+              "response sentiment.",
+          },
+          note: {
+            type: "string",
+            description:
+              "One-line audit note appended to the lead's notes column.",
+          },
+        },
+        required: ["company_query", "status"],
+      },
+      handler: async (input) => {
+        const i = input as {
+          company_query: string;
+          status: Lead["status"];
+          classification?:
+            | "positive"
+            | "neutral"
+            | "negative"
+            | "referral";
+          note?: string;
+        };
+        const updated = await updateLeadStatusByCompany({
+          companyQuery: i.company_query,
+          status: i.status,
+          classification: i.classification,
+          noteAppend: i.note,
+        });
+        if (!updated) {
+          return {
+            ok: false,
+            reason: "no_match",
+            company_query: i.company_query,
+          };
+        }
+        await logAgentAction({
+          agent: "growth",
+          action: "tool.update_lead_status_by_company.completed",
+          metadata: {
+            lead_id: updated.id,
+            company: updated.company,
+            new_status: i.status,
+            classification: i.classification ?? null,
+          },
+          status: "completed",
+        });
+        return {
+          ok: true,
+          lead_id: updated.id,
+          company: updated.company,
+          status: updated.status,
+        };
+      },
+    },
+
+    {
+      name: "add_manual_lead",
+      description:
+        "Add a lead Georges supplied directly (e.g. 'add Amadou " +
+        "Diallo, marketing@dakarfood.sn, Dakar Food'). Status starts " +
+        "at 'researched' so the next prospecting run picks it up. " +
+        "Use only when Georges has explicitly given you contact " +
+        "details — never invent them.",
+      input_schema: {
+        type: "object",
+        properties: {
+          company: { type: "string" },
+          contact_name: { type: "string" },
+          email: { type: "string" },
+          contact_title: { type: "string" },
+          notes: { type: "string" },
+        },
+        required: ["company"],
+      },
+      handler: async (input) => {
+        const i = input as {
+          company: string;
+          contact_name?: string;
+          email?: string;
+          contact_title?: string;
+          notes?: string;
+        };
+        const lead = await upsertLead({
+          company: i.company,
+          contact_name: i.contact_name ?? null,
+          contact_title: i.contact_title ?? null,
+          email: i.email ?? null,
+          status: "researched",
+          notes:
+            (i.notes ? i.notes + "\n" : "") +
+            `Source: manual_georges (${new Date().toISOString()})`,
+          // A Georges-supplied contact is verified by definition.
+          intent_signal: "manual_georges_referral",
+          confidence_score: 90,
+          awa_warmup: false,
+          outreach_channel: i.email ? "email" : null,
+          why_now: "Georges supplied directly",
+        });
+        await logAgentAction({
+          agent: "growth",
+          action: "tool.add_manual_lead.completed",
+          metadata: { lead_id: lead.id, company: lead.company },
+          status: "completed",
+        });
+        return { ok: true, lead_id: lead.id, company: lead.company };
+      },
+    },
+
+    {
+      name: "pause_lead",
+      description:
+        "Pause outreach to a lead. Status becomes 'paused' and the " +
+        "follow-up cadence skips them until Georges says otherwise.",
+      input_schema: {
+        type: "object",
+        properties: {
+          company_query: { type: "string" },
+          reason: { type: "string" },
+        },
+        required: ["company_query"],
+      },
+      handler: async (input) => {
+        const i = input as { company_query: string; reason?: string };
+        const updated = await updateLeadStatusByCompany({
+          companyQuery: i.company_query,
+          status: "paused",
+          noteAppend: `Paused${i.reason ? ` — ${i.reason}` : ""}`,
+        });
+        return updated
+          ? { ok: true, company: updated.company }
+          : { ok: false, reason: "no_match" };
+      },
+    },
+
+    {
+      name: "get_pipeline_summary",
+      description:
+        "Return a snapshot of the lead pipeline grouped by status, " +
+        "plus the monthly Apollo credit counter. Use this to answer " +
+        "'what's the pipeline?' / 'where are we?' questions in Slack.",
+      input_schema: { type: "object", properties: {} },
+      handler: async () => {
+        const snap = await getPipelineSnapshot();
+        return {
+          hot: snap.hot.map((l) => l.company),
+          warm: snap.warm.map((l) => l.company),
+          contacted: snap.contacted.map((l) => l.company),
+          paused: snap.paused.map((l) => l.company),
+          cold_count: snap.cold.length,
+          converted: snap.converted.map((l) => l.company),
+          apollo: {
+            used: snap.apollo_credits_used,
+            remaining: snap.apollo_credits_remaining,
+          },
+        };
       },
     },
 

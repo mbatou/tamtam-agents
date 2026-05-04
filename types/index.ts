@@ -87,12 +87,45 @@ export type LeadStatus =
   | "queued"
   | "contacted"
   | "warm"
+  | "hot"
   | "replied"
   | "cold"
   | "rejected"
+  | "paused"
+  | "converted"
   | "won"
   | "lost"
   | "do_not_contact";
+
+/* -------------------------------------------------------------------------- */
+/*  Supabase: email_messages (Session 5C)                                     */
+/* -------------------------------------------------------------------------- */
+
+export type EmailDirection = "outbound";
+
+export type EmailType = "day1" | "day4" | "day9" | "manual";
+
+export interface EmailMessage {
+  id: string;
+  lead_id: string | null;
+  direction: EmailDirection;
+  subject: string;
+  body: string;
+  resend_message_id: string | null;
+  email_type: EmailType;
+  sent_at: string;
+}
+
+export interface EmailMessageInsert {
+  id?: string;
+  lead_id?: string | null;
+  direction: EmailDirection;
+  subject: string;
+  body: string;
+  resend_message_id?: string | null;
+  email_type: EmailType;
+  sent_at?: string;
+}
 
 export type LeadOutreachChannel = "linkedin" | "email" | "both";
 

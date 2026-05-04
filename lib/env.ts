@@ -165,6 +165,16 @@ export const env = {
     return optional("RESEND_WEBHOOK_SECRET");
   },
 
+  /**
+   * Optional. Apollo.io API key for lead enrichment. Free tier is
+   * 75 credits/month — lib/apollo.ts gates calls behind a soft
+   * cap (kept 5-credit buffer) and gracefully no-ops when the
+   * key isn't set. Get one at apollo.io → Settings → Integrations.
+   */
+  get APOLLO_API_KEY(): string | undefined {
+    return optional("APOLLO_API_KEY");
+  },
+
   // ─── App ────────────────────────────────────────────────────────────
   get APP_URL(): string {
     return optional("APP_URL") ?? "http://localhost:3000";
