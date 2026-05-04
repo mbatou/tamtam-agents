@@ -16,6 +16,10 @@
 import { inngest } from "@/lib/inngest";
 import { runGrowthAgent } from "@/agents/growth";
 import {
+  isConversational,
+  respondConversationally,
+} from "@/agents/growth/conversational";
+import {
   delayToInngest,
   getResponseDelay,
 } from "@/lib/human-behavior";
@@ -76,11 +80,35 @@ export const growthJob = inngest.createFunction(
     const triggerSource: "manual" | "cron" | "approval" =
       runData?.trigger ?? "manual";
 
-    // Three reasons to skip the delay:
-    //   1. Cron triggers (already cron-paced).
-    //   2. Admin commands in a mention (Georges expects fast acks).
+    // Routing decisions for Slack mentions. Order matters:
+    //   1. Admin command  → no delay, run agent (admin tools post acks)
+    //   2. Conversational → no delay, NO agent loop, generate direct
+    //                       answer with rich context, post once
+    //   3. Default        → 2–8 min delay, run agent
     const isAdmin =
       mentionData != null && isAdminCommand(mentionData.text);
+    const isChat =
+      mentionData != null &&
+      !isAdmin &&
+      isConversational(mentionData.text);
+
+    // Conversational path: bypass runWithTools entirely. This stops
+    // Kofi from auto-running get_pipeline_summary on every casual
+    // question (which posts a snapshot Georges didn't ask for).
+    if (mentionData && isChat) {
+      return step.run("respond-conversationally", async () =>
+        respondConversationally({
+          text: mentionData.text,
+          channel: mentionData.channel,
+          threadTs: mentionData.thread_ts,
+        }),
+      );
+    }
+
+    // Three reasons to skip the human-thinking delay:
+    //   - Cron trigger
+    //   - Admin command
+    //   - (Conversational already returned above)
     const shouldDelay = triggerSource !== "cron" && !isAdmin;
 
     if (shouldDelay) {

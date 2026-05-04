@@ -48,7 +48,12 @@ import {
   setLeadStatus,
   upsertLead,
 } from "@/lib/supabase";
-import { getCreditsRemaining, searchPeople } from "@/lib/apollo";
+import {
+  getCreditsRemaining,
+  looksLikeRealEmail,
+  revealPerson,
+  searchPeople,
+} from "@/lib/apollo";
 import { sendOutreachEmail } from "@/lib/resend";
 import OutreachEmail from "@/emails/outreach-template";
 import { createElement } from "react";
@@ -118,7 +123,11 @@ function parseLeadsJson(raw: string): ResearchedLead[] {
 /* -------------------------------------------------------------------------- */
 
 const APOLLO_TOP_N = 3;
-const APOLLO_MIN_SCORE = 70;
+// Threshold lowered from 70 → 50: Claude-generated leads
+// rarely score above 70 because they have no real signal data
+// behind them. With the 5-credit buffer + APOLLO_TOP_N=3 cap,
+// we still spend ≤ 3 credits/day on this step.
+const APOLLO_MIN_SCORE = 50;
 const APOLLO_LOW_CREDIT_BUFFER = 5;
 
 export const kofiDailyProspecting = inngest.createFunction(
@@ -283,6 +292,18 @@ export const kofiDailyProspecting = inngest.createFunction(
           };
         }
 
+        // Per-lead decision logs (visible in Vercel logs).
+        for (const lead of leadsResearched) {
+          const score = lead.confidence_score ?? 0;
+          console.log(
+            `[apollo] lead score: ${score} for "${lead.company}" — ${
+              score >= APOLLO_MIN_SCORE
+                ? "attempting enrichment"
+                : "below threshold, skipping"
+            }`,
+          );
+        }
+
         // Highest-confidence leads first; limit to APOLLO_TOP_N
         // and only those at or above the score threshold.
         const candidates = [...leadsResearched]
@@ -293,10 +314,15 @@ export const kofiDailyProspecting = inngest.createFunction(
           )
           .slice(0, APOLLO_TOP_N);
 
+        console.log(
+          `[apollo] enriching top ${candidates.length} of ${leadsResearched.length} leads ` +
+            `(threshold ≥ ${APOLLO_MIN_SCORE}, cap ${APOLLO_TOP_N})`,
+        );
+
         let verified = 0;
         const verifiedIds: string[] = [];
         for (const lead of candidates) {
-          const person = await searchPeople({
+          const search = await searchPeople({
             company: lead.company,
             titles: [
               "Marketing Director",
@@ -308,13 +334,40 @@ export const kofiDailyProspecting = inngest.createFunction(
             ],
             locations: ["Senegal", "Dakar"],
           });
-          if (person?.email) {
+
+          // Resolve the email from search; if missing or obfuscated,
+          // fall back to a /people/match reveal call (1 extra credit).
+          // This adds up at scale — only call when truly needed.
+          let resolved = search;
+          if (search && !looksLikeRealEmail(search.email)) {
+            console.log(
+              `[apollo] search returned no usable email for "${lead.company}" — calling revealPerson`,
+            );
+            const revealed = await revealPerson({
+              personId: search.id,
+              name: search.name,
+              organizationName: lead.company,
+            });
+            if (revealed) {
+              resolved = {
+                id: revealed.id ?? search.id,
+                name: revealed.name ?? search.name,
+                title: revealed.title ?? search.title,
+                email: looksLikeRealEmail(revealed.email)
+                  ? revealed.email
+                  : search.email,
+                linkedin_url: revealed.linkedin_url ?? search.linkedin_url,
+              };
+            }
+          }
+
+          if (resolved && looksLikeRealEmail(resolved.email)) {
             await upsertLead({
               company: lead.company,
-              email: person.email,
-              contact_name: person.name ?? lead.contact_name,
-              contact_title: person.title ?? lead.contact_title,
-              linkedin_url: person.linkedin_url ?? lead.linkedin_url,
+              email: resolved.email,
+              contact_name: resolved.name ?? lead.contact_name,
+              contact_title: resolved.title ?? lead.contact_title,
+              linkedin_url: resolved.linkedin_url ?? lead.linkedin_url,
               status: lead.status,
               outreach_channel: "email",
               notes:
@@ -328,6 +381,13 @@ export const kofiDailyProspecting = inngest.createFunction(
             });
             verified += 1;
             verifiedIds.push(lead.id);
+            console.log(
+              `[apollo] verified ${lead.company} → ${resolved.email}`,
+            );
+          } else {
+            console.log(
+              `[apollo] no usable email for ${lead.company} — left unverified`,
+            );
           }
         }
 
