@@ -3,25 +3,31 @@
  *
  * Cron: 0 8 * * 1-6  (08:00 WAT, Monday–Saturday).
  *
- * Steps (each its own step.run so Inngest can checkpoint and the
- * dashboard tells the story):
+ * Steps (each its own step.run so Inngest checkpoints cleanly):
  *   1. snapshot Awa's last 7 days of content (warmth signal)
- *   2. research 10 leads via Claude (structured JSON output)
- *   3. send LinkedIn connection requests (graceful fallback)
- *   4. send email-1 to leads with verified addresses
- *   5. day-4 follow-ups
- *   6. day-9 follow-ups
- *   7. mark stale leads cold (> 9 days no reply)
- *   8. post the morning brief in #tamtam-growth
+ *   2. research 10 leads via Claude (structured JSON output;
+ *      every lead carries notes "Source: claude_research" plus
+ *      a verify-before-trusting marker — these are AI-generated
+ *      profiles, not real-time-verified)
+ *   3. Apollo enrichment of TOP 3 high-confidence leads (≥ 70),
+ *      credit-aware: skip entirely when remaining < 5 and post
+ *      a warning in #tamtam-growth. Updates only the leads where
+ *      Apollo returns a usable email — those are flagged
+ *      verified=true via metadata + outreach_channel='email'.
+ *   4. day-1 emails sent ONLY to verified leads (email field
+ *      populated AND notes carry "verified=true" flag).
+ *      Unverified leads land in the "needs verification" batch
+ *      surfaced in the morning brief — Georges supplies contacts
+ *      he knows; Kofi adds them tomorrow.
+ *   5. day-4 follow-ups (Tiak-Tiak proof, ≤ 50 words)
+ *   6. day-9 follow-ups (soft close, ≤ 30 words)
+ *   7. cold cleanup (status=cold for stale > 9 day silence)
+ *   8. morning brief in #tamtam-growth with Apollo credit count
  *
- * Honest limitations (documented in code, not buried):
- *   - Lead research is Claude-from-training, not real-time search.
- *     Some "leads" may not exist as real companies. Each lead row
- *     carries metadata.source = "claude_research" so the audit
- *     trail is unambiguous.
- *   - LinkedIn connection requests run via lib/linkedin.ts which
- *     uses the "queued for manual send" fallback until LinkedIn
- *     messaging API approval lands.
+ * Every outbound send writes to email_messages so day-4 / day-9
+ * can thread the original subject. Resend message id is captured
+ * on every row — when Resend Inbound is wired, replies will join
+ * naturally on resend_message_id.
  */
 
 import { inngest } from "@/lib/inngest";
@@ -31,20 +37,27 @@ import {
   postAsAgent,
 } from "@/lib/slack";
 import {
+  getLastOutboundEmailToLead,
   getLeadsNeedingDay4Followup,
   getLeadsNeedingDay9Followup,
   getLeadsToMarkCold,
   getRecentAgentLogs,
   logAgentAction,
   markFollowupSent,
+  saveEmailMessage,
   setLeadStatus,
   upsertLead,
 } from "@/lib/supabase";
-import { sendConnectionRequest } from "@/lib/linkedin";
+import { getCreditsRemaining, searchPeople } from "@/lib/apollo";
 import { sendOutreachEmail } from "@/lib/resend";
 import OutreachEmail from "@/emails/outreach-template";
 import { createElement } from "react";
 import { GROWTH_SYSTEM_PROMPT } from "@/agents/growth/system-prompt";
+import {
+  generateDay1Email,
+  generateDay4Email,
+  generateDay9Email,
+} from "@/agents/growth/email-templates";
 import type {
   Lead,
   LeadInsert,
@@ -80,7 +93,6 @@ function looksLikeLead(x: unknown): x is ResearchedLead {
 }
 
 function parseLeadsJson(raw: string): ResearchedLead[] {
-  // Strip ``` fences if Claude wrapped the JSON.
   const cleaned = raw
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/\s*```$/i, "")
@@ -89,7 +101,6 @@ function parseLeadsJson(raw: string): ResearchedLead[] {
   try {
     parsed = JSON.parse(cleaned);
   } catch {
-    // Try to find a JSON array embedded in prose.
     const match = cleaned.match(/\[[\s\S]*\]/);
     if (!match) return [];
     try {
@@ -106,13 +117,17 @@ function parseLeadsJson(raw: string): ResearchedLead[] {
 /*  Function                                                                  */
 /* -------------------------------------------------------------------------- */
 
+const APOLLO_TOP_N = 3;
+const APOLLO_MIN_SCORE = 70;
+const APOLLO_LOW_CREDIT_BUFFER = 5;
+
 export const kofiDailyProspecting = inngest.createFunction(
   {
     id: "kofi-daily-prospecting",
     name: "Kofi — autonomous prospecting day",
   },
   [
-    { cron: "0 8 * * 1-6" }, // 08:00 WAT, Mon–Sat
+    { cron: "0 8 * * 1-6" },
     { event: "tamtam/kofi.prospecting" },
   ],
   async ({ step }) => {
@@ -127,8 +142,6 @@ export const kofiDailyProspecting = inngest.createFunction(
           r.action === "publish.completed" ||
           r.action === "tool.send_approval_request.completed",
       );
-      // The brand a post warmed up isn't stored as a structured field
-      // today, so we surface the action trail to Kofi as flavour.
       return {
         since,
         published_count: publishedActions.length,
@@ -193,7 +206,9 @@ export const kofiDailyProspecting = inngest.createFunction(
           email: r.email,
           status: "researched",
           last_contact_at: null,
-          notes: `Research source: claude_research (${new Date().toISOString()}).`,
+          notes:
+            `Source: claude_research (${new Date().toISOString()}).\n` +
+            `AI-generated profile — verify before trusting.`,
           intent_signal: r.intent_signal,
           confidence_score: r.confidence_score,
           awa_warmup: !!r.awa_warmup,
@@ -238,204 +253,234 @@ export const kofiDailyProspecting = inngest.createFunction(
       return persisted;
     });
 
-    /* ── 3. LinkedIn connection requests ────────────────────────────── */
-    const connectionResults = await step.run(
-      "send-connection-requests",
+    /* ── 3. Apollo enrichment of top-N high-confidence leads ───────── */
+    const enrichmentReport = await step.run(
+      "apollo-enrich",
       async () => {
-        const results: Array<{
-          lead_id: string;
-          mode: "real" | "fallback" | "skipped";
-        }> = [];
-        for (const lead of leadsResearched) {
-          if (
-            lead.outreach_channel !== "linkedin" &&
-            lead.outreach_channel !== "both"
-          ) {
-            continue;
-          }
-          if (!lead.linkedin_url) {
-            results.push({ lead_id: lead.id, mode: "skipped" });
-            continue;
-          }
-          const noteRes = await generateText({
-            system: GROWTH_SYSTEM_PROMPT,
-            user:
-              `Write a LinkedIn connection request note for ` +
-              `${lead.company}${
-                lead.contact_name ? ` (${lead.contact_name})` : ""
-              }. ` +
-              `MAX 20 words. Reference one specific thing about ` +
-              `their brand. NO pitch. Sound like a peer. Output ` +
-              `the note text only — no quotes, no preamble.\n\n` +
-              `Intent signal: ${lead.intent_signal ?? "(none)"}\n` +
-              `Why now: ${lead.why_now ?? "(none)"}`,
-            maxTokens: 80,
-            temperature: 0.6,
+        const remaining = await getCreditsRemaining();
+        if (remaining < APOLLO_LOW_CREDIT_BUFFER) {
+          await postAsAgent({
+            agent: "growth",
+            channel: defaultChannelFor("growth"),
+            text:
+              `:warning: Apollo credits nearly exhausted for this ` +
+              `month (${Math.max(0, remaining)} remaining of 70 ` +
+              `usable). Email enrichment paused until the first of ` +
+              `next month.`,
+          }).catch(() => undefined);
+          await logAgentAction({
+            agent: "growth",
+            action: "kofi.apollo.skipped_low_credits",
+            metadata: { remaining },
+            status: "skipped",
           });
-          const note = noteRes.text.trim().replace(/^["']|["']$/g, "");
-          const sent = await sendConnectionRequest({
-            profileUrl: lead.linkedin_url,
-            note,
-            company: lead.company,
-          });
-          results.push({ lead_id: lead.id, mode: sent.mode });
+          return {
+            attempted: 0,
+            verified: 0,
+            credits_used_this_run: 0,
+            credits_remaining_after: remaining,
+            verified_lead_ids: [] as string[],
+          };
         }
-        return results;
+
+        // Highest-confidence leads first; limit to APOLLO_TOP_N
+        // and only those at or above the score threshold.
+        const candidates = [...leadsResearched]
+          .filter((l) => (l.confidence_score ?? 0) >= APOLLO_MIN_SCORE)
+          .sort(
+            (a, b) =>
+              (b.confidence_score ?? 0) - (a.confidence_score ?? 0),
+          )
+          .slice(0, APOLLO_TOP_N);
+
+        let verified = 0;
+        const verifiedIds: string[] = [];
+        for (const lead of candidates) {
+          const person = await searchPeople({
+            company: lead.company,
+            titles: [
+              "Marketing Director",
+              "Brand Manager",
+              "CEO",
+              "Fondateur",
+              "Directeur Marketing",
+              "Head of Growth",
+            ],
+            locations: ["Senegal", "Dakar"],
+          });
+          if (person?.email) {
+            await upsertLead({
+              company: lead.company,
+              email: person.email,
+              contact_name: person.name ?? lead.contact_name,
+              contact_title: person.title ?? lead.contact_title,
+              linkedin_url: person.linkedin_url ?? lead.linkedin_url,
+              status: lead.status,
+              outreach_channel: "email",
+              notes:
+                (lead.notes ? lead.notes + "\n\n" : "") +
+                `[${new Date().toISOString()}] Apollo verified — ` +
+                `email + contact resolved. Source: apollo.`,
+              intent_signal: lead.intent_signal,
+              confidence_score: lead.confidence_score,
+              awa_warmup: lead.awa_warmup,
+              why_now: lead.why_now,
+            });
+            verified += 1;
+            verifiedIds.push(lead.id);
+          }
+        }
+
+        const remainingAfter = await getCreditsRemaining();
+        await logAgentAction({
+          agent: "growth",
+          action: "kofi.apollo.batch_completed",
+          metadata: {
+            attempted: candidates.length,
+            verified,
+            credits_remaining_after: remainingAfter,
+          },
+          status: "completed",
+        });
+
+        return {
+          attempted: candidates.length,
+          verified,
+          credits_used_this_run: candidates.length, // each search costs 1
+          credits_remaining_after: remainingAfter,
+          verified_lead_ids: verifiedIds,
+        };
       },
     );
 
-    /* ── 4. Email-1 (curiosity question only, no pitch) ─────────────── */
-    const emailResults = await step.run("send-email-1", async () => {
-      const results: Array<{
-        lead_id: string;
-        mode: "sent" | "skipped";
-        reason?: string;
-      }> = [];
+    /* ── 4. Day-1 emails — verified leads only ──────────────────────── */
+    const day1Results = await step.run("send-day-1-emails", async () => {
+      const sent: Array<{ lead_id: string; company: string }> = [];
+      const skipped_unverified: Array<{ lead_id: string; company: string }> =
+        [];
+
       for (const lead of leadsResearched) {
-        if (
-          lead.outreach_channel !== "email" &&
-          lead.outreach_channel !== "both"
-        ) {
-          continue;
-        }
-        if (!lead.email) {
-          results.push({ lead_id: lead.id, mode: "skipped", reason: "no_email" });
-          continue;
-        }
-
-        const draft = await generateText({
-          system: GROWTH_SYSTEM_PROMPT,
-          user:
-            `Write outreach EMAIL ONE for ${lead.company}. Output ` +
-            `JSON: {"subject": string, "body_markdown": string}. ` +
-            `No prose around it.\n\n` +
-            `Rules — non-negotiable:\n` +
-            `  - Subject ≤ 7 words, lowercase, no clickbait, ONE ` +
-            `    specific observation about their brand.\n` +
-            `  - Body: EXACTLY 3 sentences.\n` +
-            `      sentence 1: a specific observation (their intent ` +
-            `      signal).\n` +
-            `      sentence 2: ONE genuine curiosity question.\n` +
-            `      sentence 3: a soft sign-off line that does NOT ` +
-            `      pitch, NOT mention Tamtam by name unless they ` +
-            `      already know us, NOT include a CTA, NOT include ` +
-            `      a link.\n` +
-            `  - Sign as "Kofi" (Tamtam comes later).\n\n` +
-            `Lead profile:\n` +
-            `  Company: ${lead.company}\n` +
-            `  Contact: ${lead.contact_name ?? "(unknown name)"}\n` +
-            `  Title: ${lead.contact_title ?? "(unknown title)"}\n` +
-            `  Intent signal: ${lead.intent_signal ?? "(none)"}\n` +
-            `  Why now: ${lead.why_now ?? "(none)"}\n` +
-            `  Awa warmup: ${lead.awa_warmup ? "yes" : "no"}`,
-          maxTokens: 350,
-          temperature: 0.5,
-        });
-
-        let parsed: { subject: string; body_markdown: string };
-        try {
-          parsed = JSON.parse(
-            draft.text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, ""),
-          );
-        } catch {
-          results.push({
+        const isVerified = enrichmentReport.verified_lead_ids.includes(
+          lead.id,
+        );
+        // Only Apollo-verified leads OR Georges-supplied (added via
+        // add_manual_lead earlier) get a day-1 send. The latter
+        // arrive with status='researched' AND email present, but we
+        // can't distinguish them from raw claude_research leads at
+        // this point — so we rely on Apollo verification here. The
+        // morning brief surfaces unverified leads to Georges.
+        if (!isVerified || !lead.email) {
+          skipped_unverified.push({
             lead_id: lead.id,
-            mode: "skipped",
-            reason: "draft_parse_failed",
+            company: lead.company,
           });
           continue;
         }
 
-        const firstName = lead.contact_name?.split(/\s+/)[0] ?? null;
+        let draft;
         try {
-          await sendOutreachEmail({
-            to: lead.email,
-            subject: parsed.subject,
-            template: createElement(OutreachEmail, {
-              recipientFirstName: firstName,
-              bodyMarkdown: parsed.body_markdown,
-              signatureName: "Kofi",
-              signatureTitle: "Growth",
-              signatureCompany: "Tamtam",
-              preview: parsed.subject,
-            }),
-            text: parsed.body_markdown,
-          });
-          await setLeadStatus(lead.id, "contacted", {
-            lastContactAt: new Date().toISOString(),
-          });
-          results.push({ lead_id: lead.id, mode: "sent" });
+          draft = await generateDay1Email(lead);
         } catch (err) {
           await logAgentAction({
             agent: "growth",
-            action: "kofi.email_1.failed",
+            action: "kofi.day1.draft_failed",
             metadata: {
               lead_id: lead.id,
               error: err instanceof Error ? err.message : String(err),
             },
             status: "failed",
           });
-          results.push({
+          continue;
+        }
+
+        const firstName = lead.contact_name?.split(/\s+/)[0] ?? null;
+        try {
+          const emailRes = await sendOutreachEmail({
+            to: lead.email,
+            subject: draft.subject,
+            template: createElement(OutreachEmail, {
+              recipientFirstName: firstName,
+              bodyMarkdown: draft.body_markdown,
+              signatureName: "Kofi",
+              signatureTitle: "Growth",
+              signatureCompany: "Tamtam",
+              preview: draft.subject,
+            }),
+            text: draft.body_markdown,
+          });
+          await saveEmailMessage({
             lead_id: lead.id,
-            mode: "skipped",
-            reason: "send_failed",
+            direction: "outbound",
+            subject: draft.subject,
+            body: draft.body_markdown,
+            resend_message_id: emailRes.id,
+            email_type: "day1",
+          });
+          await setLeadStatus(lead.id, "contacted", {
+            lastContactAt: new Date().toISOString(),
+          });
+          sent.push({ lead_id: lead.id, company: lead.company });
+        } catch (err) {
+          await logAgentAction({
+            agent: "growth",
+            action: "kofi.day1.send_failed",
+            metadata: {
+              lead_id: lead.id,
+              error: err instanceof Error ? err.message : String(err),
+            },
+            status: "failed",
           });
         }
       }
-      return results;
+
+      return { sent, skipped_unverified };
     });
 
     /* ── 5. Day-4 follow-ups ─────────────────────────────────────────── */
     const day4 = await step.run("day-4-followups", async () => {
-      const dueLeads = await getLeadsNeedingDay4Followup();
+      const due = await getLeadsNeedingDay4Followup();
       const sent: string[] = [];
-      for (const lead of dueLeads) {
+      for (const lead of due) {
         if (!lead.email) continue;
-        const draft = await generateText({
-          system: GROWTH_SYSTEM_PROMPT,
-          user:
-            `Day-4 follow-up for ${lead.company}. Output JSON: ` +
-            `{"subject": string, "body_markdown": string}.\n` +
-            `Rules: ≤ 40 words total body. Reference their specific ` +
-            `situation. Add ONE piece of social proof — Tiak-Tiak ` +
-            `early results (e.g. "we recently helped a Senegalese ` +
-            `fintech reach 1,000+ Échos at 43 FCFA per click"). ` +
-            `End with one simple question. Subject can be a Re: of ` +
-            `the original — pick a tight one.\n\n` +
-            `Lead: ${lead.company} — ${lead.intent_signal ?? "no signal"}\n` +
-            `Original notes: ${lead.notes ?? "(none)"}`,
-          maxTokens: 250,
-          temperature: 0.5,
-        });
-        let parsed: { subject: string; body_markdown: string };
+        const prior = await getLastOutboundEmailToLead(lead.id);
+        let draft;
         try {
-          parsed = JSON.parse(
-            draft.text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, ""),
-          );
+          draft = await generateDay4Email({
+            lead,
+            day1Subject: prior?.subject ?? null,
+          });
         } catch {
           continue;
         }
         const firstName = lead.contact_name?.split(/\s+/)[0] ?? null;
         try {
-          await sendOutreachEmail({
+          const emailRes = await sendOutreachEmail({
             to: lead.email,
-            subject: parsed.subject,
+            subject: draft.subject,
             template: createElement(OutreachEmail, {
               recipientFirstName: firstName,
-              bodyMarkdown: parsed.body_markdown,
+              bodyMarkdown: draft.body_markdown,
               signatureName: "Kofi",
               signatureTitle: "Growth",
               signatureCompany: "Tamtam",
-              preview: parsed.subject,
+              preview: draft.subject,
             }),
-            text: parsed.body_markdown,
+            text: draft.body_markdown,
+          });
+          await saveEmailMessage({
+            lead_id: lead.id,
+            direction: "outbound",
+            subject: draft.subject,
+            body: draft.body_markdown,
+            resend_message_id: emailRes.id,
+            email_type: "day4",
           });
           await markFollowupSent({ leadId: lead.id, which: "day4" });
           sent.push(lead.id);
         } catch (err) {
           await logAgentAction({
             agent: "growth",
-            action: "kofi.day4.failed",
+            action: "kofi.day4.send_failed",
             metadata: {
               lead_id: lead.id,
               error: err instanceof Error ? err.message : String(err),
@@ -444,55 +489,54 @@ export const kofiDailyProspecting = inngest.createFunction(
           });
         }
       }
-      return { due: dueLeads.length, sent: sent.length };
+      return { due: due.length, sent: sent.length };
     });
 
     /* ── 6. Day-9 follow-ups ─────────────────────────────────────────── */
     const day9 = await step.run("day-9-followups", async () => {
-      const dueLeads = await getLeadsNeedingDay9Followup();
+      const due = await getLeadsNeedingDay9Followup();
       const sent: string[] = [];
-      for (const lead of dueLeads) {
+      for (const lead of due) {
         if (!lead.email) continue;
-        const draft = await generateText({
-          system: GROWTH_SYSTEM_PROMPT,
-          user:
-            `Day-9 soft-close follow-up for ${lead.company}. Output ` +
-            `JSON: {"subject": string, "body_markdown": string}.\n` +
-            `Rules: ≤ 25 words total body. Warm. NO pressure. Door ` +
-            `stays open. Riff on "if the timing isn't right, no ` +
-            `worries — we'll be here when it is."`,
-          maxTokens: 200,
-          temperature: 0.5,
-        });
-        let parsed: { subject: string; body_markdown: string };
+        const prior = await getLastOutboundEmailToLead(lead.id);
+        let draft;
         try {
-          parsed = JSON.parse(
-            draft.text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, ""),
-          );
+          draft = await generateDay9Email({
+            lead,
+            day1Subject: prior?.subject ?? null,
+          });
         } catch {
           continue;
         }
         const firstName = lead.contact_name?.split(/\s+/)[0] ?? null;
         try {
-          await sendOutreachEmail({
+          const emailRes = await sendOutreachEmail({
             to: lead.email,
-            subject: parsed.subject,
+            subject: draft.subject,
             template: createElement(OutreachEmail, {
               recipientFirstName: firstName,
-              bodyMarkdown: parsed.body_markdown,
+              bodyMarkdown: draft.body_markdown,
               signatureName: "Kofi",
               signatureTitle: "Growth",
               signatureCompany: "Tamtam",
-              preview: parsed.subject,
+              preview: draft.subject,
             }),
-            text: parsed.body_markdown,
+            text: draft.body_markdown,
+          });
+          await saveEmailMessage({
+            lead_id: lead.id,
+            direction: "outbound",
+            subject: draft.subject,
+            body: draft.body_markdown,
+            resend_message_id: emailRes.id,
+            email_type: "day9",
           });
           await markFollowupSent({ leadId: lead.id, which: "day9" });
           sent.push(lead.id);
         } catch (err) {
           await logAgentAction({
             agent: "growth",
-            action: "kofi.day9.failed",
+            action: "kofi.day9.send_failed",
             metadata: {
               lead_id: lead.id,
               error: err instanceof Error ? err.message : String(err),
@@ -501,10 +545,10 @@ export const kofiDailyProspecting = inngest.createFunction(
           });
         }
       }
-      return { due: dueLeads.length, sent: sent.length };
+      return { due: due.length, sent: sent.length };
     });
 
-    /* ── 7. Mark stale leads cold (> 9 days no reply) ────────────────── */
+    /* ── 7. Cold cleanup ─────────────────────────────────────────────── */
     const cold = await step.run("mark-cold", async () => {
       const stale = await getLeadsToMarkCold();
       for (const lead of stale) {
@@ -513,7 +557,7 @@ export const kofiDailyProspecting = inngest.createFunction(
       return { marked_cold: stale.length };
     });
 
-    /* ── 8. Morning brief in #tamtam-growth ─────────────────────────── */
+    /* ── 8. Morning brief in #tamtam-growth ──────────────────────────── */
     await step.run("morning-brief", async () => {
       const topLeads = leadsResearched.slice(0, 3).map((l) => ({
         company: l.company,
@@ -521,10 +565,6 @@ export const kofiDailyProspecting = inngest.createFunction(
         confidence: l.confidence_score,
         awa_warmup: l.awa_warmup,
       }));
-      const connectionsSent = connectionResults.filter(
-        (r) => r.mode !== "skipped",
-      ).length;
-      const emailsSent = emailResults.filter((r) => r.mode === "sent").length;
 
       const briefRes = await generateText({
         system: GROWTH_SYSTEM_PROMPT,
@@ -535,19 +575,34 @@ export const kofiDailyProspecting = inngest.createFunction(
           `it like a real human, not a template. Address Georges ` +
           `directly at the end.\n\n` +
           `Format target:\n` +
-          `Morning. Here's what I'm working on today:\n\n` +
-          `📍 New leads researched: ${leadsResearched.length}\n` +
-          `   → top picks with one line each\n\n` +
-          `📧 Outreach sent: ${
-            connectionsSent + emailsSent
-          } total (${emailsSent} emails, ${connectionsSent} LinkedIn)\n\n` +
+          `Morning. Here's the pipeline:\n\n` +
+          `🔍 New leads researched: ${leadsResearched.length}\n` +
+          `   → top 3 with company + why_now + score\n\n` +
+          `✅ Apollo verified: ${enrichmentReport.verified} / ` +
+          `${enrichmentReport.attempted} attempted\n` +
+          `   Credits used this month: ${
+            70 - enrichmentReport.credits_remaining_after
+          } / 70 (5-credit safety buffer)\n\n` +
+          `📧 Emails sent today: ${day1Results.sent.length}\n` +
+          `   → company names\n\n` +
           `🔄 Follow-ups: ${day4.sent} day-4s, ${day9.sent} day-9s\n\n` +
-          `🌡️ Pipeline temperature: short read on warmth\n\n` +
-          `Georges — one specific thing for him, or "nothing urgent, ` +
-          `I've got it"\n\n` +
-          `Top 3 leads:\n${JSON.stringify(topLeads, null, 2)}\n` +
-          `Cold-marked today: ${cold.marked_cold}`,
-        maxTokens: 600,
+          `🌡️ Pipeline:\n` +
+          `   Active (contacted): from snapshot\n` +
+          `   Cold (archived today): ${cold.marked_cold}\n\n` +
+          `📋 Needs email verification:\n` +
+          `   ${
+            day1Results.skipped_unverified.length
+          } companies — list them, then ask Georges to drop any ` +
+          `contacts he knows.\n\n` +
+          `Georges — one specific thing for him, or "all clear".\n\n` +
+          `Top 3 leads:\n${JSON.stringify(topLeads, null, 2)}\n\n` +
+          `Sent today:\n${JSON.stringify(day1Results.sent, null, 2)}\n\n` +
+          `Needs verification:\n${JSON.stringify(
+            day1Results.skipped_unverified,
+            null,
+            2,
+          )}`,
+        maxTokens: 700,
         temperature: 0.5,
       });
 
@@ -560,8 +615,11 @@ export const kofiDailyProspecting = inngest.createFunction(
 
     return {
       leads_researched: leadsResearched.length,
-      connections_attempted: connectionResults.length,
-      emails_sent: emailResults.filter((r) => r.mode === "sent").length,
+      apollo_attempted: enrichmentReport.attempted,
+      apollo_verified: enrichmentReport.verified,
+      apollo_credits_remaining_after: enrichmentReport.credits_remaining_after,
+      day1_sent: day1Results.sent.length,
+      day1_skipped_unverified: day1Results.skipped_unverified.length,
       day4_sent: day4.sent,
       day9_sent: day9.sent,
       marked_cold: cold.marked_cold,

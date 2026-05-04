@@ -251,7 +251,54 @@ Current migrations:
   escalation flag, etc.) plus the indexes the day-4/day-9 cadence
   queries depend on.
 
-### Kofi autonomous prospecting (Session 5B)
+### Pipeline admin from Slack (Session 5C)
+
+Georges manages the lead pipeline by talking to Kofi in
+`#tamtam-growth`. Kofi understands these patterns natively (they
+route through `update_lead_status_by_company`, `add_manual_lead`,
+`pause_lead`, `get_pipeline_summary`):
+
+```
+@Kofi Wave Sénégal replied, they're interested
+   → status = warm, classification = positive
+
+@Kofi mark Jumia as dead, wrong contact
+   → status = rejected, note appended
+
+@Kofi pause outreach to Orange Sénégal
+   → status = paused
+
+@Kofi add this lead: Amadou Diallo, marketing@dakarfood.sn, Dakar Food
+   → row created, status = researched, picked up tomorrow
+
+@Kofi what's the pipeline status?
+   → snapshot: Hot / Warm / Contacted / Paused / Cold / Converted
+                + Apollo credits this month
+```
+
+Kofi acts immediately and confirms in one short reply. He does NOT
+ask permission — Georges is giving instructions, not asking.
+
+### Apollo.io credit budget
+
+Apollo's free tier is **75 credits/month**. `lib/apollo.ts` enforces
+a soft cap of **70** (5-credit safety buffer):
+
+- `kofi-daily-prospecting` enriches up to **3 high-confidence leads**
+  per run (score ≥ 70). Roughly 3 credits/day × 22 working days =
+  ~66 credits/month — within budget.
+- When credits remaining drops below 5, the entire enrichment step
+  is skipped for the day and Kofi posts a warning in
+  `#tamtam-growth`. Day-1 emails go only to leads Apollo has
+  already verified — no enrichment, no send.
+- Every credit-consuming call writes `apollo.credit_used` to
+  `agent_logs`. The morning brief surfaces the running monthly
+  count.
+
+If a higher tier is ever needed, swap `APOLLO_MONTHLY_HARD_CEILING`
+in `lib/apollo.ts` to match the new allowance.
+
+### Kofi autonomous prospecting (Session 5B + 5C)
 
 Kofi runs a full prospecting day at **08:00 WAT, Mon–Sat** without
 asking permission. Cron-driven `kofi-daily-prospecting`:

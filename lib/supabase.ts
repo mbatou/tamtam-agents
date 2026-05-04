@@ -22,9 +22,12 @@ import type {
   ApprovalInsert,
   ApprovalPayload,
   ApprovalType,
+  EmailMessage,
+  EmailMessageInsert,
   Lead,
   LeadInsert,
   LeadResponseClassification,
+  LeadStatus,
   Post,
   PostInsert,
   PostStatus,
@@ -532,6 +535,175 @@ export async function getPendingApprovals(): Promise<Approval[]> {
     throw new Error(`[supabase] getPendingApprovals failed: ${error.message}`);
   }
   return (data ?? []) as unknown as Approval[];
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Email messages (Session 5C — outbound audit trail)                        */
+/* -------------------------------------------------------------------------- */
+
+export async function saveEmailMessage(
+  input: EmailMessageInsert,
+): Promise<EmailMessage> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("email_messages")
+    .insert(input)
+    .select()
+    .single();
+  if (error) {
+    throw new Error(`[supabase] saveEmailMessage failed: ${error.message}`);
+  }
+  return data as unknown as EmailMessage;
+}
+
+/**
+ * Most-recent outbound email_messages row for a lead. Used by
+ * day-4 / day-9 generators to thread `Re: <subject>` correctly.
+ * Returns null if no email has ever been logged for the lead.
+ */
+export async function getLastOutboundEmailToLead(
+  leadId: string,
+): Promise<EmailMessage | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("email_messages")
+    .select("*")
+    .eq("lead_id", leadId)
+    .eq("direction", "outbound")
+    .order("sent_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.warn(
+      `[supabase] getLastOutboundEmailToLead(${leadId}) failed: ${error.message}`,
+    );
+    return null;
+  }
+  return (data ?? null) as unknown as EmailMessage | null;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Pipeline admin (Session 5C — Georges natural-language updates)            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Find a lead by case-insensitive partial company name. Used when
+ * Georges types "Wave Sénégal replied" and we need to map that to
+ * a row in `leads`. Returns the most recently contacted match
+ * when there are duplicates.
+ */
+export async function findLeadByCompany(
+  companyQuery: string,
+): Promise<Lead | null> {
+  // Postgres `ILIKE` is case-insensitive; %company% matches partials.
+  const { data, error } = await getSupabaseAdmin()
+    .from("leads")
+    .select("*")
+    .ilike("company", `%${companyQuery}%`)
+    .order("last_contact_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.warn(
+      `[supabase] findLeadByCompany(${companyQuery}) failed: ${error.message}`,
+    );
+    return null;
+  }
+  return (data ?? null) as unknown as Lead | null;
+}
+
+export async function updateLeadStatusByCompany(input: {
+  companyQuery: string;
+  status: LeadStatus;
+  classification?: LeadResponseClassification;
+  noteAppend?: string;
+}): Promise<Lead | null> {
+  const lead = await findLeadByCompany(input.companyQuery);
+  if (!lead) return null;
+
+  const update: Record<string, unknown> = { status: input.status };
+  if (input.classification) {
+    update.response_classification = input.classification;
+  }
+  if (input.noteAppend) {
+    update.notes =
+      (lead.notes ? lead.notes + "\n\n" : "") +
+      `[${new Date().toISOString()}] ${input.noteAppend}`;
+  }
+
+  const { data, error } = await getSupabaseAdmin()
+    .from("leads")
+    .update(update as never)
+    .eq("id", lead.id)
+    .select()
+    .single();
+  if (error) {
+    throw new Error(
+      `[supabase] updateLeadStatusByCompany(${input.companyQuery}) failed: ${error.message}`,
+    );
+  }
+  return data as unknown as Lead;
+}
+
+export interface PipelineSnapshot {
+  hot: Lead[];
+  warm: Lead[];
+  contacted: Lead[];
+  paused: Lead[];
+  cold: Lead[];
+  converted: Lead[];
+  apollo_credits_used: number;
+  apollo_credits_remaining: number;
+}
+
+/**
+ * Snapshot of the leads pipeline grouped by status, plus the
+ * monthly Apollo credit counter. Read-only — does not mutate
+ * anything. Used by Kofi's `get_pipeline_summary` tool.
+ */
+export async function getPipelineSnapshot(): Promise<PipelineSnapshot> {
+  const { data: rows, error } = await getSupabaseAdmin()
+    .from("leads")
+    .select("*")
+    .in("status", [
+      "hot",
+      "warm",
+      "contacted",
+      "paused",
+      "cold",
+      "converted",
+    ])
+    .order("last_contact_at", { ascending: false, nullsFirst: false });
+
+  if (error) {
+    throw new Error(`[supabase] getPipelineSnapshot failed: ${error.message}`);
+  }
+
+  const all = (rows ?? []) as unknown as Lead[];
+  const buckets = (s: Lead["status"]): Lead[] =>
+    all.filter((r) => r.status === s);
+
+  // Reuse the Apollo logger helper inline so this file stays
+  // self-contained (no circular import with lib/apollo.ts).
+  const monthStart = new Date();
+  monthStart.setUTCDate(1);
+  monthStart.setUTCHours(0, 0, 0, 0);
+  const { count: creditCount } = await getSupabaseAdmin()
+    .from("agent_logs")
+    .select("id", { count: "exact", head: true })
+    .eq("agent", "growth")
+    .eq("action", "apollo.credit_used")
+    .gte("created_at", monthStart.toISOString());
+
+  const used = creditCount ?? 0;
+  return {
+    hot: buckets("hot"),
+    warm: buckets("warm"),
+    contacted: buckets("contacted"),
+    paused: buckets("paused"),
+    cold: buckets("cold"),
+    converted: buckets("converted"),
+    apollo_credits_used: used,
+    apollo_credits_remaining: Math.max(0, 70 - used),
+  };
 }
 
 /* -------------------------------------------------------------------------- */
